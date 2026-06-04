@@ -85,13 +85,147 @@
   td { padding: 3px 4px; vertical-align: middle; }
   tr:nth-child(even) td { background: #f8fafc; }
   tr:nth-child(odd) td { background: #ffffff; }
+
+  /* Explainer */
+  #explainer-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease;
+  }
+  #explainer-body.open { max-height: 1200px; }
+  #explainer-toggle svg {
+    transition: transform 0.25s ease;
+  }
+  #explainer-toggle.open svg { transform: rotate(180deg); }
+  .exp-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+  .exp-table th { background: #f1f5f9; color: #475569; font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.04em; padding: 5px 10px; text-align: left;
+    border-bottom: 1px solid #e2e8f0; }
+  .exp-table td { padding: 5px 10px; border-bottom: 1px solid #f1f5f9; color: #334155; vertical-align: top; }
+  .exp-table tr:last-child td { border-bottom: none; }
+  .exp-sym { font-weight: 700; color: #1e293b; }
+  .exp-section { margin-bottom: 16px; }
+  .exp-section:last-child { margin-bottom: 0; }
+  .exp-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #94a3b8; margin-bottom: 5px; }
+  .exp-identity {
+    display: inline-block;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1e293b;
+    margin: 4px 0 6px 0;
+    letter-spacing: 0.02em;
+  }
+  .rule-block {
+    border-left: 3px solid;
+    padding: 7px 10px;
+    border-radius: 0 5px 5px 0;
+    margin-bottom: 6px;
+    font-size: 12px;
+    background: white;
+  }
+  .rule-block.phi  { border-color: #3b82f6; background: #eff6ff; }
+  .rule-block.gamma { border-color: #8b5cf6; background: #f5f3ff; }
+  .rule-block strong { display: block; font-size: 11px; font-weight: 700; margin-bottom: 2px; color: #1e293b; }
+  .rule-block span { color: #475569; }
 </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
 
 <div class="p-4">
   <h1 class="text-xl font-bold text-gray-800 mb-1">Task List Simulator</h1>
-  <p class="text-xs text-gray-500 mb-4">Edit rules on the left. Adjust sliders on the right. Everything updates instantly.</p>
+  <p class="text-xs text-gray-500 mb-3">Edit rules on the left. Adjust sliders on the right. Everything updates instantly.</p>
+
+  <!-- Collapsible explainer -->
+  <div class="mb-4">
+    <button id="explainer-toggle"
+      onclick="toggleExplainer()"
+      class="flex items-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors select-none"
+      style="background:none;border:none;padding:0;cursor:pointer;">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="4 6 8 10 12 6"/>
+      </svg>
+      How does the timing model work?
+    </button>
+
+    <div id="explainer-body">
+      <div class="mt-3 bg-slate-50 border border-slate-200 rounded-lg p-5" style="max-width:860px;">
+
+        <!-- Problem -->
+        <div class="exp-section">
+          <div class="exp-label">The problem</div>
+          <p class="text-xs text-slate-600 leading-relaxed">
+            Every student books at a different time — some 6 months out, some 3 weeks out. A single fixed deadline
+            breaks for late bookers. A single departure-relative rule breaks for early bookers.
+            We needed a model that works correctly for <em>any</em> booking window.
+          </p>
+        </div>
+
+        <!-- Constants -->
+        <div class="exp-section">
+          <div class="exp-label">Three constants — calculated once at booking</div>
+          <table class="exp-table">
+            <thead><tr><th>Symbol</th><th>Name</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><span class="exp-sym">t</span></td><td>Booking day</td><td>Calendar day the student booked</td></tr>
+              <tr><td><span class="exp-sym">d</span></td><td>Departure day</td><td>Calendar day the student departs</td></tr>
+              <tr><td><span class="exp-sym">λ = d − t</span></td><td>Booking window</td><td>Total days between booking and departure. Fixed at booking, never changes.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Why not t,d,x -->
+        <div class="exp-section">
+          <div class="exp-label">Why we don't use t, d, and x directly</div>
+          <p class="text-xs text-slate-600 leading-relaxed">
+            t, d, and x are calendar dates. They are different for every student and hard to reason about universally.
+            Instead we use two relative variables that mean the same thing for every student, regardless of when they booked or when they depart.
+          </p>
+        </div>
+
+        <!-- Variables -->
+        <div class="exp-section">
+          <div class="exp-label">Three variables — updated daily</div>
+          <table class="exp-table">
+            <thead><tr><th>Symbol</th><th>Name</th><th>Meaning</th><th>Formula</th></tr></thead>
+            <tbody>
+              <tr><td><span class="exp-sym">x</span></td><td>Today</td><td>Today's date</td><td>—</td></tr>
+              <tr><td><span class="exp-sym">ϕ</span></td><td>Days since booking</td><td>How long the student has had the app</td><td>ϕ = x − t</td></tr>
+              <tr><td><span class="exp-sym">γ</span></td><td>Days until departure</td><td>How close the student is to leaving</td><td>γ = d − x</td></tr>
+            </tbody>
+          </table>
+          <div class="exp-identity">λ = ϕ + γ</div>
+          <p class="text-xs text-slate-500">Always true, for every student, at every point in time. Days since booking plus days until departure always equals the total booking window.</p>
+        </div>
+
+        <!-- Rule types -->
+        <div class="exp-section">
+          <div class="exp-label">Two types of rules</div>
+          <div class="rule-block phi">
+            <strong>ϕ-based — booking-relative &nbsp;·&nbsp; triggers when ϕ ≥ threshold</strong>
+            <span>Use when urgency depends on time since booking. Example: passport and parent contact need to be collected fast after booking, regardless of departure date.</span>
+          </div>
+          <div class="rule-block gamma">
+            <strong>γ-based — departure-relative &nbsp;·&nbsp; triggers when γ ≤ threshold</strong>
+            <span>Use when urgency depends on how close departure is. Example: health info and emergency contact matter as departure approaches.</span>
+          </div>
+        </div>
+
+        <!-- Grace period -->
+        <div class="exp-section">
+          <div class="exp-label">Grace period</div>
+          <p class="text-xs text-slate-600 leading-relaxed">
+            No task becomes overdue until ϕ ≥ grace period (default 3). No student ever opens the app on day one to find tasks already overdue — everyone gets a minimum window to act before anything turns red.
+          </p>
+        </div>
+
+      </div>
+    </div>
+  </div>
 
   <div class="flex gap-4" style="align-items: flex-start;">
 
@@ -348,6 +482,14 @@ function escHtml(s) {
 
 buildRulesTable();
 simulate();
+
+function toggleExplainer() {
+  const body   = document.getElementById('explainer-body');
+  const toggle = document.getElementById('explainer-toggle');
+  const isOpen = body.classList.contains('open');
+  body.classList.toggle('open', !isOpen);
+  toggle.classList.toggle('open', !isOpen);
+}
 </script>
 </body>
 </html>
