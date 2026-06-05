@@ -420,7 +420,11 @@
         <div class="flex items-center gap-4 mt-2">
           <div class="flex items-center gap-1.5">
             <div style="width:12px;height:12px;background:#ef4444;border-radius:2px;"></div>
-            <span class="text-xs text-gray-500">Conflict</span>
+            <span class="text-xs text-gray-500">Priority conflict</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <div style="width:12px;height:12px;background:#f97316;border-radius:2px;"></div>
+            <span class="text-xs text-gray-500">Empty Do Now</span>
           </div>
           <div class="flex items-center gap-1.5">
             <div style="width:12px;height:12px;background:#22c55e;border-radius:2px;"></div>
@@ -733,14 +737,27 @@ function simulate() {
     }
   });
 
+  // Empty Do Now conflict check
+  const hasOverdue  = cols['OVERDUE'].length > 0;
+  const hasDoNow    = cols['DO NOW'].length > 0;
+  const hasDoLater  = cols['DO LATER'].length > 0;
+  const emptyDoNow  = hasOverdue && !hasDoNow && hasDoLater;
+
   const conflictOut = document.getElementById('conflict-output');
-  if (conflicts.length === 0) {
-    conflictOut.innerHTML = '<div class="text-xs text-green-600 font-medium">✅ No priority conflicts</div>';
+  let html = '';
+  if (conflicts.length === 0 && !emptyDoNow) {
+    html = '<div class="text-xs text-green-600 font-medium">✅ No priority conflicts</div>';
   } else {
-    conflictOut.innerHTML = conflicts.map(c =>
-      `<div class="text-xs text-red-600 font-medium mb-1">⚠️ <strong>${escHtml(c.lower)}</strong> is Overdue but <strong>${escHtml(c.higher)}</strong> is only Do Now</div>`
-    ).join('');
+    if (conflicts.length > 0) {
+      html += conflicts.map(c =>
+        `<div class="text-xs text-red-600 font-medium mb-1">⚠️ <strong>${escHtml(c.lower)}</strong> is Overdue but <strong>${escHtml(c.higher)}</strong> is only Do Now</div>`
+      ).join('');
+    }
+    if (emptyDoNow) {
+      html += `<div class="text-xs font-medium mt-1" style="color:#ea580c;">⚠️ Do Now is empty — student has overdue tasks but no active guidance on what to do next</div>`;
+    }
   }
+  conflictOut.innerHTML = html;
 }
 
 function escHtml(s) {
@@ -773,39 +790,47 @@ function evalStates(lam, phi, rules, grace) {
   });
 }
 
-// Returns array of conflict description strings, empty if none
+// Returns { priority: string[], emptyDoNow: bool }
 function findConflicts(states) {
-  const conflicts = [];
+  const priority = [];
   states.forEach((s, i) => {
     if (s.state === 'OVERDUE') {
       for (let j = 0; j < i; j++) {
         if (states[j].state === 'DO NOW') {
-          conflicts.push(`${s.name} Overdue > ${states[j].name} Do Now`);
+          priority.push(`${s.name} Overdue > ${states[j].name} Do Now`);
         }
       }
     }
   });
-  return conflicts;
+  const hasOverdue  = states.some(s => s.state === 'OVERDUE');
+  const hasDoNow    = states.some(s => s.state === 'DO NOW');
+  const hasDoLater  = states.some(s => s.state === 'DO LATER');
+  const emptyDoNow  = hasOverdue && !hasDoNow && hasDoLater;
+  return { priority, emptyDoNow };
 }
 
-// Scan result: Float32Array isn't needed, use a flat Uint8Array
-// Index: [lam-1][phi] → value: 0=impossible, 1=no conflict, 2=conflict
-let scanData = null; // will be Uint8Array(LAM_MAX * (LAM_MAX+1))
+// Scan result: flat Uint8Array
+// Index: (lam-1)*(LAM_MAX+1)+phi
+// Values: 0=impossible, 1=clean, 2=priority conflict, 3=empty-DoNow conflict, 4=both
+let scanData = null;
 
 function runScan() {
   const rules = getRules();
   const grace = parseInt(document.getElementById('grace').value) || 0;
 
-  const data = new Uint8Array(LAM_MAX * (LAM_MAX + 1)); // [lam-1] * (LAM_MAX+1) + phi
+  const data = new Uint8Array(LAM_MAX * (LAM_MAX + 1));
   for (let lam = 1; lam <= LAM_MAX; lam++) {
     for (let phi = 0; phi <= LAM_MAX; phi++) {
       const idx = (lam - 1) * (LAM_MAX + 1) + phi;
       if (phi > lam) {
-        data[idx] = 0; // impossible
+        data[idx] = 0;
       } else {
-        const states    = evalStates(lam, phi, rules, grace);
-        const conflicts = findConflicts(states);
-        data[idx] = conflicts.length > 0 ? 2 : 1;
+        const { priority, emptyDoNow } = findConflicts(evalStates(lam, phi, rules, grace));
+        const hasPri = priority.length > 0;
+        if (hasPri && emptyDoNow) data[idx] = 4;
+        else if (hasPri)          data[idx] = 2;
+        else if (emptyDoNow)      data[idx] = 3;
+        else                      data[idx] = 1;
       }
     }
   }
@@ -829,11 +854,12 @@ function drawHeatmap(rules, grace) {
   const ctx = canvas.getContext('2d');
   for (let lam = 1; lam <= LAM_MAX; lam++) {
     for (let phi = 0; phi <= LAM_MAX; phi++) {
-      const idx = (lam - 1) * (LAM_MAX + 1) + phi;
-      const v   = scanData[idx];
-      if (v === 0)      ctx.fillStyle = '#e5e7eb'; // grey — impossible
-      else if (v === 2) ctx.fillStyle = '#ef4444'; // red — conflict
-      else              ctx.fillStyle = '#22c55e'; // green — ok
+      const v = scanData[(lam - 1) * (LAM_MAX + 1) + phi];
+      if      (v === 0) ctx.fillStyle = '#e5e7eb'; // grey  — impossible
+      else if (v === 2) ctx.fillStyle = '#ef4444'; // red   — priority conflict
+      else if (v === 3) ctx.fillStyle = '#f97316'; // orange — empty Do Now
+      else if (v === 4) ctx.fillStyle = '#ef4444'; // red   — both (priority takes precedence)
+      else              ctx.fillStyle = '#22c55e'; // green — clean
       ctx.fillRect((lam - 1) * CELL, phi * CELL, CELL, CELL);
     }
   }
@@ -856,12 +882,22 @@ function drawHeatmap(rules, grace) {
     if (v === 0) {
       tooltip.innerHTML = `<span class="opacity-60">λ = ${lam}, ϕ = ${phi}<br>Impossible state</span>`;
     } else {
-      const gamma     = lam - phi;
-      const conflicts = findConflicts(evalStates(lam, phi, rules, grace));
-      const cText     = conflicts.length === 0
-        ? '<span style="color:#86efac">none</span>'
-        : conflicts.map(c => `<span style="color:#fca5a5">${c}</span>`).join('<br>');
-      tooltip.innerHTML = `λ = ${lam} &nbsp;·&nbsp; ϕ = ${phi} &nbsp;·&nbsp; γ = ${gamma}<br>conflicts: ${cText}`;
+      const gamma  = lam - phi;
+      const { priority, emptyDoNow } = findConflicts(evalStates(lam, phi, rules, grace));
+      let cText;
+      if (priority.length > 0 && emptyDoNow) {
+        cText = `<span style="color:#fca5a5">both</span><br>` +
+                priority.map(c => `<span style="color:#fca5a5;font-size:10px">${c}</span>`).join('<br>') +
+                `<br><span style="color:#fed7aa;font-size:10px">empty Do Now</span>`;
+      } else if (priority.length > 0) {
+        cText = `<span style="color:#fca5a5">priority order</span><br>` +
+                priority.map(c => `<span style="color:#fca5a5;font-size:10px">${c}</span>`).join('<br>');
+      } else if (emptyDoNow) {
+        cText = `<span style="color:#fed7aa">empty Do Now</span>`;
+      } else {
+        cText = `<span style="color:#86efac">No conflict</span>`;
+      }
+      tooltip.innerHTML = `λ = ${lam} &nbsp;·&nbsp; ϕ = ${phi} &nbsp;·&nbsp; γ = ${gamma}<br>Conflict: ${cText}`;
     }
     tooltip.classList.remove('hidden');
     tooltip.style.left = (e.clientX + 14) + 'px';
@@ -871,50 +907,86 @@ function drawHeatmap(rules, grace) {
 }
 
 function renderSummary(data) {
-  let total = 0, withConflict = 0;
-  // per-λ: track if any ϕ had a conflict
+  let total = 0, nPriority = 0, nEmptyDoNow = 0, nBoth = 0;
   const lamHasConflict = new Uint8Array(LAM_MAX + 1);
   for (let lam = 1; lam <= LAM_MAX; lam++) {
     for (let phi = 0; phi <= lam; phi++) {
       const v = data[(lam - 1) * (LAM_MAX + 1) + phi];
       total++;
-      if (v === 2) { withConflict++; lamHasConflict[lam] = 1; }
+      if (v === 2) { nPriority++;                        lamHasConflict[lam] = 1; }
+      if (v === 3) { nEmptyDoNow++;                      lamHasConflict[lam] = 1; }
+      if (v === 4) { nPriority++; nEmptyDoNow++; nBoth++; lamHasConflict[lam] = 1; }
     }
   }
-  const conflictFree = total - withConflict;
-  const pct = ((conflictFree / total) * 100).toFixed(1);
+  // nPriority/nEmptyDoNow now count scenarios with that type (including overlap)
+  // Unique scenarios with any conflict:
+  const withAny = nPriority + nEmptyDoNow - nBoth;
+  const nClean  = total - withAny;
+  const pct     = ((nClean / total) * 100).toFixed(1);
 
-  // Find clean λ range (no conflicts across all ϕ)
+  // Largest contiguous clean λ range
   let cleanStart = null, cleanEnd = null, bestStart = null, bestEnd = null, bestLen = 0;
   for (let lam = 1; lam <= LAM_MAX; lam++) {
     if (!lamHasConflict[lam]) {
       if (cleanStart === null) cleanStart = lam;
       cleanEnd = lam;
       if ((cleanEnd - cleanStart + 1) > bestLen) {
-        bestLen   = cleanEnd - cleanStart + 1;
-        bestStart = cleanStart;
-        bestEnd   = cleanEnd;
+        bestLen = cleanEnd - cleanStart + 1;
+        bestStart = cleanStart; bestEnd = cleanEnd;
       }
-    } else {
-      cleanStart = null; cleanEnd = null;
-    }
+    } else { cleanStart = null; cleanEnd = null; }
   }
 
-  const stats = [
-    { label: 'Valid scenarios',      value: total.toLocaleString() },
-    { label: 'With conflict',        value: withConflict.toLocaleString(), accent: withConflict > 0 ? 'text-red-600' : 'text-green-600' },
-    { label: 'Conflict-free',        value: pct + '%',                     accent: 'text-green-600' },
-    { label: 'Largest clean λ range',
-      value: bestStart !== null ? `λ ${bestStart} – ${bestEnd}` : 'none',
-      accent: bestStart !== null ? 'text-blue-600' : 'text-gray-400' },
-  ];
-
   const el = document.getElementById('scan-summary');
-  el.innerHTML = stats.map(s => `
-    <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
-      <div class="text-xs text-gray-400 mb-1">${s.label}</div>
-      <div class="text-sm font-bold ${s.accent || 'text-gray-800'}">${s.value}</div>
-    </div>`).join('');
+  el.innerHTML = `
+    <div class="col-span-4 grid grid-cols-4 gap-3">
+      <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
+        <div class="text-xs text-gray-400 mb-1">Valid scenarios</div>
+        <div class="text-sm font-bold text-gray-800">${total.toLocaleString()}</div>
+      </div>
+      <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
+        <div class="text-xs text-gray-400 mb-1">Conflict-free</div>
+        <div class="text-sm font-bold text-green-600">${pct}%</div>
+      </div>
+      <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
+        <div class="text-xs text-gray-400 mb-1">Largest clean λ range</div>
+        <div class="text-sm font-bold text-blue-600">${bestStart !== null ? `λ ${bestStart} – ${bestEnd}` : 'none'}</div>
+      </div>
+      <div></div>
+    </div>
+    <div class="col-span-4 mt-1">
+      <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Conflict breakdown</div>
+      <div class="grid grid-cols-4 gap-3">
+        <div class="bg-red-50 rounded-lg p-3 border border-red-100">
+          <div class="flex items-center gap-1.5 mb-1">
+            <div style="width:8px;height:8px;background:#ef4444;border-radius:2px;flex-shrink:0;"></div>
+            <span class="text-xs text-gray-400">Priority conflicts</span>
+          </div>
+          <div class="text-sm font-bold text-red-600">${nPriority.toLocaleString()} scenarios</div>
+        </div>
+        <div class="bg-orange-50 rounded-lg p-3 border border-orange-100">
+          <div class="flex items-center gap-1.5 mb-1">
+            <div style="width:8px;height:8px;background:#f97316;border-radius:2px;flex-shrink:0;"></div>
+            <span class="text-xs text-gray-400">Empty Do Now</span>
+          </div>
+          <div class="text-sm font-bold text-orange-600">${nEmptyDoNow.toLocaleString()} scenarios</div>
+        </div>
+        <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
+          <div class="flex items-center gap-1.5 mb-1">
+            <div style="width:8px;height:8px;background:#9ca3af;border-radius:2px;flex-shrink:0;"></div>
+            <span class="text-xs text-gray-400">Both simultaneously</span>
+          </div>
+          <div class="text-sm font-bold text-gray-600">${nBoth.toLocaleString()} scenarios</div>
+        </div>
+        <div class="bg-green-50 rounded-lg p-3 border border-green-100">
+          <div class="flex items-center gap-1.5 mb-1">
+            <div style="width:8px;height:8px;background:#22c55e;border-radius:2px;flex-shrink:0;"></div>
+            <span class="text-xs text-gray-400">Conflict-free</span>
+          </div>
+          <div class="text-sm font-bold text-green-600">${nClean.toLocaleString()} scenarios</div>
+        </div>
+      </div>
+    </div>`;
 }
 
 // Auto-rescan when rules or grace change (after first scan)
