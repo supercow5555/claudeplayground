@@ -460,10 +460,13 @@ async function persistToDisk(confirmSlotIndex) {
   try {
     // Acquire handle once per session — user picks the HTML file
     if (!fileHandle) {
-      fileHandle = await window.showSaveFilePicker({
-        suggestedName: 'task-list-simulator.html',
+      [fileHandle] = await window.showOpenFilePicker({
         types: [{ description: 'HTML file', accept: { 'text/html': ['.html'] } }],
+        multiple: false,
       });
+      // Request write permission immediately after picking
+      const perm = await fileHandle.requestPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') { fileHandle = null; return; }
     }
 
     // Read current file text so we preserve everything outside the data tag
