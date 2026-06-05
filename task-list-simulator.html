@@ -132,6 +132,54 @@
   .rule-block.gamma { border-color: #8b5cf6; background: #f5f3ff; }
   .rule-block strong { display: block; font-size: 11px; font-weight: 700; margin-bottom: 2px; color: #1e293b; }
   .rule-block span { color: #475569; }
+
+  /* Save slots */
+  .slot-card {
+    border-radius: 7px;
+    padding: 8px 10px;
+    min-width: 140px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    background: white;
+    transition: box-shadow 0.15s;
+    position: relative;
+  }
+  .slot-card.empty   { border: 1.5px dashed #cbd5e1; }
+  .slot-card.filled  { border: 1.5px solid #cbd5e1; }
+  .slot-card.active  { border: 2px solid #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }
+  .slot-num { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.06em; }
+  .slot-name-display {
+    font-size: 12px; font-weight: 600; color: #1e293b; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border-bottom: 1px dashed transparent; transition: border-color 0.15s;
+    line-height: 1.4;
+  }
+  .slot-name-display:hover { border-bottom-color: #94a3b8; }
+  .slot-name-display.locked { cursor: default; }
+  .slot-name-display.locked:hover { border-bottom-color: transparent; }
+  .slot-name-input {
+    font-size: 12px; font-weight: 600; color: #1e293b;
+    border: none; border-bottom: 1.5px solid #3b82f6;
+    padding: 0; background: transparent; outline: none; width: 100%;
+  }
+  .slot-status { font-size: 10px; color: #94a3b8; }
+  .slot-status.has-data { color: #64748b; }
+  .slot-actions { display: flex; gap: 4px; margin-top: 2px; }
+  .slot-btn {
+    font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 4px;
+    border: none; cursor: pointer; transition: background 0.12s, color 0.12s;
+    letter-spacing: 0.02em;
+  }
+  .slot-btn-load  { background: #f1f5f9; color: #475569; }
+  .slot-btn-load:hover:not(:disabled) { background: #e2e8f0; color: #1e293b; }
+  .slot-btn-load:disabled { opacity: 0.4; cursor: not-allowed; }
+  .slot-btn-save  { background: #eff6ff; color: #3b82f6; }
+  .slot-btn-save:hover { background: #dbeafe; color: #2563eb; }
+  .slot-confirm { font-size: 10px; font-weight: 600; color: #22c55e; position: absolute;
+    bottom: 8px; right: 10px; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+  .slot-confirm.show { opacity: 1; }
 </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -139,6 +187,15 @@
 <div class="p-4">
   <h1 class="text-xl font-bold text-gray-800 mb-1">Task List Simulator</h1>
   <p class="text-xs text-gray-500 mb-3">Edit rules on the left. Adjust sliders on the right. Everything updates instantly.</p>
+
+  <!-- Save slots -->
+  <div class="mb-4">
+    <div class="flex items-baseline gap-2 mb-2">
+      <span class="text-sm font-bold text-gray-700">Scenarios</span>
+      <span class="text-xs text-gray-400">Save and switch between different rule configurations.</span>
+    </div>
+    <div class="flex gap-3 flex-wrap" id="slots-row"></div>
+  </div>
 
   <!-- Collapsible explainer -->
   <div class="mb-4">
@@ -325,6 +382,131 @@
 </div>
 
 <script>
+// ── Save slot system ─────────────────────────────────────────────────────────
+
+const SLOT_COUNT = 5;
+
+function captureEditorState() {
+  const rules = [];
+  for (let i = 0; i < DEFAULT_RULES.length; i++) {
+    rules.push({
+      name:  document.getElementById(`rn-${i}`).value,
+      dnVar: document.getElementById(`rdnv-${i}`).value,
+      dnVal: document.getElementById(`rdnval-${i}`).value,
+      odVar: document.getElementById(`rodv-${i}`).value,
+      odVal: document.getElementById(`rodval-${i}`).value,
+    });
+  }
+  const grace = document.getElementById('grace').value;
+  return { rules, grace };
+}
+
+function applyEditorState(state) {
+  state.rules.forEach((r, i) => {
+    document.getElementById(`rn-${i}`).value    = r.name;
+    document.getElementById(`rdnv-${i}`).value  = r.dnVar;
+    document.getElementById(`rdnval-${i}`).value = r.dnVal;
+    document.getElementById(`rodv-${i}`).value  = r.odVar;
+    document.getElementById(`rodval-${i}`).value = r.odVal;
+  });
+  document.getElementById('grace').value = state.grace;
+  simulate();
+}
+
+function defaultEditorState() {
+  const rules = DEFAULT_RULES.map(r => ({
+    name: r.name, dnVar: r.dnVar, dnVal: String(r.dnVal),
+    odVar: r.odVar, odVal: String(r.odVal),
+  }));
+  return { rules, grace: '3' };
+}
+
+// slots[i] = { name, data } where data is null (empty) or a captured state
+const slots = Array.from({ length: SLOT_COUNT }, (_, i) => ({
+  name: i === 0 ? 'Default' : `Slot ${i + 1}`,
+  data: i === 0 ? defaultEditorState() : null,
+}));
+
+let activeSlot = 0; // slot 1 (index 0) active on load
+
+function renderSlots() {
+  const row = document.getElementById('slots-row');
+  row.innerHTML = '';
+  slots.forEach((slot, i) => {
+    const isActive  = i === activeSlot;
+    const isEmpty   = slot.data === null;
+    const isDefault = i === 0;
+
+    const card = document.createElement('div');
+    card.className = `slot-card ${isEmpty ? 'empty' : 'filled'} ${isActive ? 'active' : ''}`;
+    card.id = `slot-card-${i}`;
+
+    const numEl = `<div class="slot-num">Slot ${i + 1}</div>`;
+
+    const nameEl = isDefault
+      ? `<div class="slot-name-display locked" id="slot-name-${i}">Default</div>`
+      : `<div class="slot-name-display" id="slot-name-${i}"
+             onclick="startRenameSlot(${i})">${escHtml(slot.name)}</div>`;
+
+    const statusEl = `<div class="slot-status ${isEmpty ? '' : 'has-data'}" id="slot-status-${i}">
+      ${isEmpty ? 'Empty' : 'Saved'}
+    </div>`;
+
+    const actionsEl = `<div class="slot-actions">
+      <button class="slot-btn slot-btn-load" id="slot-load-${i}"
+        onclick="loadSlot(${i})" ${isEmpty ? 'disabled' : ''}>Load</button>
+      <button class="slot-btn slot-btn-save" onclick="saveSlot(${i})">Save</button>
+    </div>`;
+
+    const confirmEl = `<div class="slot-confirm" id="slot-confirm-${i}">Saved ✓</div>`;
+
+    card.innerHTML = numEl + nameEl + statusEl + actionsEl + confirmEl;
+    row.appendChild(card);
+  });
+}
+
+function loadSlot(i) {
+  if (i === 0) {
+    // Always reload from canonical defaults
+    slots[0].data = defaultEditorState();
+  }
+  if (slots[i].data === null) return;
+  activeSlot = i;
+  applyEditorState(slots[i].data);
+  renderSlots();
+}
+
+function saveSlot(i) {
+  slots[i].data = captureEditorState();
+  activeSlot = i;
+  renderSlots();
+  // Show brief confirmation
+  const confirm = document.getElementById(`slot-confirm-${i}`);
+  confirm.classList.add('show');
+  setTimeout(() => confirm.classList.remove('show'), 2000);
+}
+
+function startRenameSlot(i) {
+  if (i === 0) return;
+  const nameEl = document.getElementById(`slot-name-${i}`);
+  const current = slots[i].name;
+  nameEl.outerHTML = `<input class="slot-name-input" id="slot-name-${i}"
+    type="text" maxlength="20" value="${escHtml(current)}"
+    onblur="commitRenameSlot(${i}, this.value)"
+    onkeydown="if(event.key==='Enter') this.blur()"
+    autofocus />`;
+  // Focus happens via autofocus attribute
+  const input = document.getElementById(`slot-name-${i}`);
+  if (input) { input.focus(); input.select(); }
+}
+
+function commitRenameSlot(i, value) {
+  slots[i].name = value.trim() || `Slot ${i + 1}`;
+  renderSlots();
+}
+
+// ── End save slot system ──────────────────────────────────────────────────────
+
 const DEFAULT_RULES = [
   { name: "Passport scan",     dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
   { name: "Parent contact",    dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
@@ -482,6 +664,7 @@ function escHtml(s) {
 
 buildRulesTable();
 simulate();
+renderSlots();
 
 function toggleExplainer() {
   const body   = document.getElementById('explainer-body');
