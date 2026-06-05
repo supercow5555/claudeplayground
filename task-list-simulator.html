@@ -382,6 +382,17 @@
 </div>
 
 <script>
+const DEFAULT_RULES = [
+  { name: "Passport scan",     dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
+  { name: "Parent contact",    dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
+  { name: "Address",           dnVar: "γ", dnVal: 120, odVar: "γ", odVal: 90 },
+  { name: "Arrange travel",    dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
+  { name: "Manage documents",  dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
+  { name: "Health info",       dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
+  { name: "Emergency contact", dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30 },
+  { name: "Placement test",    dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30 },
+];
+
 // ── Save slot system ─────────────────────────────────────────────────────────
 
 const SLOT_COUNT = 5;
@@ -506,17 +517,6 @@ function commitRenameSlot(i, value) {
 }
 
 // ── End save slot system ──────────────────────────────────────────────────────
-
-const DEFAULT_RULES = [
-  { name: "Passport scan",     dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
-  { name: "Parent contact",    dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
-  { name: "Address",           dnVar: "γ", dnVal: 120, odVar: "γ", odVal: 90 },
-  { name: "Arrange travel",    dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
-  { name: "Manage documents",  dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
-  { name: "Health info",       dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
-  { name: "Emergency contact", dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30 },
-  { name: "Placement test",    dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30 },
-];
 
 function buildRulesTable() {
   const tbody = document.getElementById('rules-body');
