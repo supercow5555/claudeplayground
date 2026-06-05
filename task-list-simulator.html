@@ -381,7 +381,64 @@
   </div>
 </div>
 
-<!-- Slot persistence: saved data is embedded here and rewritten on save -->
+<!-- ── Conflict Scanner ─────────────────────────────────────────────────── -->
+<div class="px-4 pb-6" id="scanner-section">
+  <div class="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
+
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h2 class="text-sm font-bold text-gray-700">Conflict Scanner</h2>
+        <p class="text-xs text-gray-400 mt-0.5">Sweeps all λ × ϕ combinations and maps where priority conflicts occur.</p>
+      </div>
+      <button id="scan-btn" onclick="runScan()"
+        class="text-xs font-semibold px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors">
+        Scan all scenarios
+      </button>
+    </div>
+
+    <!-- Heatmap container -->
+    <div id="scanner-output" class="hidden">
+      <div class="mb-3 overflow-x-auto">
+        <!-- axis label top -->
+        <div class="flex items-center mb-1 gap-2">
+          <span class="text-xs text-gray-400 font-medium" style="width:32px;"></span>
+          <span class="text-xs text-gray-400">λ →  (1 to 180)</span>
+        </div>
+        <div class="flex gap-0" style="align-items:flex-start;">
+          <!-- Y axis label -->
+          <div style="width:32px;display:flex;align-items:center;justify-content:flex-end;padding-right:4px;">
+            <span class="text-xs text-gray-400" style="writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;">ϕ (0 → max λ)</span>
+          </div>
+          <!-- Canvas -->
+          <canvas id="heatmap-canvas" style="display:block;cursor:crosshair;border:1px solid #e2e8f0;border-radius:4px;"></canvas>
+        </div>
+        <!-- Tooltip -->
+        <div id="heatmap-tooltip"
+          class="fixed z-50 pointer-events-none hidden text-xs bg-gray-900 text-white rounded px-2 py-1.5 shadow-lg"
+          style="max-width:220px;line-height:1.5;"></div>
+        <!-- Legend -->
+        <div class="flex items-center gap-4 mt-2">
+          <div class="flex items-center gap-1.5">
+            <div style="width:12px;height:12px;background:#ef4444;border-radius:2px;"></div>
+            <span class="text-xs text-gray-500">Conflict</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <div style="width:12px;height:12px;background:#22c55e;border-radius:2px;"></div>
+            <span class="text-xs text-gray-500">No conflict</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <div style="width:12px;height:12px;background:#e5e7eb;border-radius:2px;"></div>
+            <span class="text-xs text-gray-500">Impossible (ϕ &gt; λ)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary stats -->
+      <div class="grid grid-cols-4 gap-3 mt-4" id="scan-summary"></div>
+    </div>
+
+  </div>
+</div>
 <script id="saved-slots" type="application/json">null</script>
 
 <script>
@@ -693,6 +750,181 @@ function escHtml(s) {
 buildRulesTable();
 simulate();
 renderSlots();
+
+// ── Conflict Scanner ──────────────────────────────────────────────────────────
+
+const LAM_MAX = 180;
+const CELL    = 3; // px per cell
+
+// Pure function: evaluate task states for a given (lam, phi, rules, grace)
+// Returns array of { name, state }
+function evalStates(lam, phi, rules, grace) {
+  const gamma = lam - phi;
+  return rules.map(r => {
+    const dnVal = parseFloat(r.dnVal) || 0;
+    const odVal = parseFloat(r.odVal) || 0;
+    const dnMet = r.dnVar === 'ϕ' ? phi >= dnVal : gamma <= dnVal;
+    const odMet = r.odVar === 'ϕ' ? phi >= odVal : gamma <= odVal;
+    let state;
+    if (odMet && phi >= grace) state = 'OVERDUE';
+    else if (dnMet)            state = 'DO NOW';
+    else                       state = 'DO LATER';
+    return { name: r.name, state };
+  });
+}
+
+// Returns array of conflict description strings, empty if none
+function findConflicts(states) {
+  const conflicts = [];
+  states.forEach((s, i) => {
+    if (s.state === 'OVERDUE') {
+      for (let j = 0; j < i; j++) {
+        if (states[j].state === 'DO NOW') {
+          conflicts.push(`${s.name} Overdue > ${states[j].name} Do Now`);
+        }
+      }
+    }
+  });
+  return conflicts;
+}
+
+// Scan result: Float32Array isn't needed, use a flat Uint8Array
+// Index: [lam-1][phi] → value: 0=impossible, 1=no conflict, 2=conflict
+let scanData = null; // will be Uint8Array(LAM_MAX * (LAM_MAX+1))
+
+function runScan() {
+  const rules = getRules();
+  const grace = parseInt(document.getElementById('grace').value) || 0;
+
+  const data = new Uint8Array(LAM_MAX * (LAM_MAX + 1)); // [lam-1] * (LAM_MAX+1) + phi
+  for (let lam = 1; lam <= LAM_MAX; lam++) {
+    for (let phi = 0; phi <= LAM_MAX; phi++) {
+      const idx = (lam - 1) * (LAM_MAX + 1) + phi;
+      if (phi > lam) {
+        data[idx] = 0; // impossible
+      } else {
+        const states    = evalStates(lam, phi, rules, grace);
+        const conflicts = findConflicts(states);
+        data[idx] = conflicts.length > 0 ? 2 : 1;
+      }
+    }
+  }
+  scanData = data;
+
+  drawHeatmap(rules, grace);
+  renderSummary(data);
+  document.getElementById('scanner-output').classList.remove('hidden');
+  document.getElementById('scan-btn').textContent = 'Re-scan';
+}
+
+function drawHeatmap(rules, grace) {
+  const canvas = document.getElementById('heatmap-canvas');
+  const W = LAM_MAX;       // x: λ from 1..180
+  const H = LAM_MAX + 1;   // y: ϕ from 0..180
+  canvas.width  = W * CELL;
+  canvas.height = H * CELL;
+  canvas.style.width  = (W * CELL) + 'px';
+  canvas.style.height = (H * CELL) + 'px';
+
+  const ctx = canvas.getContext('2d');
+  for (let lam = 1; lam <= LAM_MAX; lam++) {
+    for (let phi = 0; phi <= LAM_MAX; phi++) {
+      const idx = (lam - 1) * (LAM_MAX + 1) + phi;
+      const v   = scanData[idx];
+      if (v === 0)      ctx.fillStyle = '#e5e7eb'; // grey — impossible
+      else if (v === 2) ctx.fillStyle = '#ef4444'; // red — conflict
+      else              ctx.fillStyle = '#22c55e'; // green — ok
+      ctx.fillRect((lam - 1) * CELL, phi * CELL, CELL, CELL);
+    }
+  }
+
+  // Tooltip logic
+  const tooltip = document.getElementById('heatmap-tooltip');
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width  / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const cx = Math.floor((e.clientX - rect.left) * scaleX / CELL);
+    const cy = Math.floor((e.clientY - rect.top)  * scaleY / CELL);
+    const lam = cx + 1;
+    const phi = cy;
+    if (lam < 1 || lam > LAM_MAX || phi < 0 || phi > LAM_MAX) {
+      tooltip.classList.add('hidden'); return;
+    }
+    const idx = (lam - 1) * (LAM_MAX + 1) + phi;
+    const v   = scanData[idx];
+    if (v === 0) {
+      tooltip.innerHTML = `<span class="opacity-60">λ = ${lam}, ϕ = ${phi}<br>Impossible state</span>`;
+    } else {
+      const gamma     = lam - phi;
+      const conflicts = findConflicts(evalStates(lam, phi, rules, grace));
+      const cText     = conflicts.length === 0
+        ? '<span style="color:#86efac">none</span>'
+        : conflicts.map(c => `<span style="color:#fca5a5">${c}</span>`).join('<br>');
+      tooltip.innerHTML = `λ = ${lam} &nbsp;·&nbsp; ϕ = ${phi} &nbsp;·&nbsp; γ = ${gamma}<br>conflicts: ${cText}`;
+    }
+    tooltip.classList.remove('hidden');
+    tooltip.style.left = (e.clientX + 14) + 'px';
+    tooltip.style.top  = (e.clientY - 8)  + 'px';
+  };
+  canvas.onmouseleave = () => tooltip.classList.add('hidden');
+}
+
+function renderSummary(data) {
+  let total = 0, withConflict = 0;
+  // per-λ: track if any ϕ had a conflict
+  const lamHasConflict = new Uint8Array(LAM_MAX + 1);
+  for (let lam = 1; lam <= LAM_MAX; lam++) {
+    for (let phi = 0; phi <= lam; phi++) {
+      const v = data[(lam - 1) * (LAM_MAX + 1) + phi];
+      total++;
+      if (v === 2) { withConflict++; lamHasConflict[lam] = 1; }
+    }
+  }
+  const conflictFree = total - withConflict;
+  const pct = ((conflictFree / total) * 100).toFixed(1);
+
+  // Find clean λ range (no conflicts across all ϕ)
+  let cleanStart = null, cleanEnd = null, bestStart = null, bestEnd = null, bestLen = 0;
+  for (let lam = 1; lam <= LAM_MAX; lam++) {
+    if (!lamHasConflict[lam]) {
+      if (cleanStart === null) cleanStart = lam;
+      cleanEnd = lam;
+      if ((cleanEnd - cleanStart + 1) > bestLen) {
+        bestLen   = cleanEnd - cleanStart + 1;
+        bestStart = cleanStart;
+        bestEnd   = cleanEnd;
+      }
+    } else {
+      cleanStart = null; cleanEnd = null;
+    }
+  }
+
+  const stats = [
+    { label: 'Valid scenarios',      value: total.toLocaleString() },
+    { label: 'With conflict',        value: withConflict.toLocaleString(), accent: withConflict > 0 ? 'text-red-600' : 'text-green-600' },
+    { label: 'Conflict-free',        value: pct + '%',                     accent: 'text-green-600' },
+    { label: 'Largest clean λ range',
+      value: bestStart !== null ? `λ ${bestStart} – ${bestEnd}` : 'none',
+      accent: bestStart !== null ? 'text-blue-600' : 'text-gray-400' },
+  ];
+
+  const el = document.getElementById('scan-summary');
+  el.innerHTML = stats.map(s => `
+    <div class="bg-gray-50 rounded-lg p-3 border border-gray-100">
+      <div class="text-xs text-gray-400 mb-1">${s.label}</div>
+      <div class="text-sm font-bold ${s.accent || 'text-gray-800'}">${s.value}</div>
+    </div>`).join('');
+}
+
+// Auto-rescan when rules or grace change (after first scan)
+const _origSimulate = simulate;
+simulate = function() {
+  _origSimulate();
+  if (scanData) runScan();
+};
+
+// ── End Conflict Scanner ──────────────────────────────────────────────────────
 
 function toggleExplainer() {
   const body   = document.getElementById('explainer-body');
