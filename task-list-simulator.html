@@ -381,6 +381,9 @@
   </div>
 </div>
 
+<!-- Slot persistence: saved data is embedded here and rewritten on save -->
+<script id="saved-slots" type="application/json">null</script>
+
 <script>
 const DEFAULT_RULES = [
   { name: "Passport scan",     dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
@@ -396,6 +399,9 @@ const DEFAULT_RULES = [
 // ── Save slot system ─────────────────────────────────────────────────────────
 
 const SLOT_COUNT = 5;
+
+// File System Access API handle — acquired on first save, reused after
+let fileHandle = null;
 
 function captureEditorState() {
   const rules = [];
@@ -414,10 +420,10 @@ function captureEditorState() {
 
 function applyEditorState(state) {
   state.rules.forEach((r, i) => {
-    document.getElementById(`rn-${i}`).value    = r.name;
-    document.getElementById(`rdnv-${i}`).value  = r.dnVar;
+    document.getElementById(`rn-${i}`).value     = r.name;
+    document.getElementById(`rdnv-${i}`).value   = r.dnVar;
     document.getElementById(`rdnval-${i}`).value = r.dnVal;
-    document.getElementById(`rodv-${i}`).value  = r.odVar;
+    document.getElementById(`rodv-${i}`).value   = r.odVar;
     document.getElementById(`rodval-${i}`).value = r.odVal;
   });
   document.getElementById('grace').value = state.grace;
@@ -432,13 +438,64 @@ function defaultEditorState() {
   return { rules, grace: '3' };
 }
 
-// slots[i] = { name, data } where data is null (empty) or a captured state
-const slots = Array.from({ length: SLOT_COUNT }, (_, i) => ({
-  name: i === 0 ? 'Default' : `Slot ${i + 1}`,
-  data: i === 0 ? defaultEditorState() : null,
-}));
+// Initialise slots from embedded JSON, falling back to defaults
+function initSlots() {
+  const tag = document.getElementById('saved-slots');
+  let saved = null;
+  try { saved = JSON.parse(tag.textContent); } catch(e) {}
+  return Array.from({ length: SLOT_COUNT }, (_, i) => {
+    if (saved && saved[i]) return saved[i];
+    return {
+      name: i === 0 ? 'Default' : `Slot ${i + 1}`,
+      data: i === 0 ? defaultEditorState() : null,
+    };
+  });
+}
 
-let activeSlot = 0; // slot 1 (index 0) active on load
+const slots = initSlots();
+let activeSlot = 0;
+
+// Serialise all slots into the HTML and write the file back to disk
+async function persistToDisk(confirmSlotIndex) {
+  try {
+    // Acquire handle once per session — user picks the HTML file
+    if (!fileHandle) {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName: 'task-list-simulator.html',
+        types: [{ description: 'HTML file', accept: { 'text/html': ['.html'] } }],
+      });
+    }
+
+    // Read current file text so we preserve everything outside the data tag
+    const existingFile = await fileHandle.getFile();
+    let html = await existingFile.text();
+
+    // Replace the content of the saved-slots script tag
+    const json = JSON.stringify(slots);
+    html = html.replace(
+      /(<script id="saved-slots" type="application\/json">)[\s\S]*?(<\/script>)/,
+      `$1${json}$2`
+    );
+
+    // Write back
+    const writable = await fileHandle.createWritable();
+    await writable.write(html);
+    await writable.close();
+
+    // Show confirmation
+    const confirmEl = document.getElementById(`slot-confirm-${confirmSlotIndex}`);
+    if (confirmEl) {
+      confirmEl.classList.add('show');
+      setTimeout(() => confirmEl.classList.remove('show'), 2000);
+    }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      alert('Could not save to file: ' + err.message);
+    }
+    // If user cancelled the picker, fileHandle stays null so next save re-prompts
+    fileHandle = null;
+  }
+}
 
 function renderSlots() {
   const row = document.getElementById('slots-row');
@@ -477,10 +534,7 @@ function renderSlots() {
 }
 
 function loadSlot(i) {
-  if (i === 0) {
-    // Always reload from canonical defaults
-    slots[0].data = defaultEditorState();
-  }
+  if (i === 0) slots[0].data = defaultEditorState();
   if (slots[i].data === null) return;
   activeSlot = i;
   applyEditorState(slots[i].data);
@@ -491,10 +545,7 @@ function saveSlot(i) {
   slots[i].data = captureEditorState();
   activeSlot = i;
   renderSlots();
-  // Show brief confirmation
-  const confirm = document.getElementById(`slot-confirm-${i}`);
-  confirm.classList.add('show');
-  setTimeout(() => confirm.classList.remove('show'), 2000);
+  persistToDisk(i);
 }
 
 function startRenameSlot(i) {
@@ -506,7 +557,6 @@ function startRenameSlot(i) {
     onblur="commitRenameSlot(${i}, this.value)"
     onkeydown="if(event.key==='Enter') this.blur()"
     autofocus />`;
-  // Focus happens via autofocus attribute
   const input = document.getElementById(`slot-name-${i}`);
   if (input) { input.focus(); input.select(); }
 }
