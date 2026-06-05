@@ -400,9 +400,6 @@ const DEFAULT_RULES = [
 
 const SLOT_COUNT = 5;
 
-// File System Access API handle — acquired on first save, reused after
-let fileHandle = null;
-
 function captureEditorState() {
   const rules = [];
   for (let i = 0; i < DEFAULT_RULES.length; i++) {
@@ -455,48 +452,26 @@ function initSlots() {
 const slots = initSlots();
 let activeSlot = 0;
 
-// Serialise all slots into the HTML and write the file back to disk
-async function persistToDisk(confirmSlotIndex) {
-  try {
-    // Acquire handle once per session — user picks the HTML file
-    if (!fileHandle) {
-      [fileHandle] = await window.showOpenFilePicker({
-        types: [{ description: 'HTML file', accept: { 'text/html': ['.html'] } }],
-        multiple: false,
-      });
-      // Request write permission immediately after picking
-      const perm = await fileHandle.requestPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') { fileHandle = null; return; }
-    }
+// Embed slot data into the page HTML and download it as the updated file
+function persistToDisk(confirmSlotIndex) {
+  let html = document.documentElement.outerHTML;
+  const json = JSON.stringify(slots);
+  html = html.replace(
+    /(<script id="saved-slots" type="application\/json">)[\s\S]*?(<\/script>)/,
+    `$1${json}$2`
+  );
+  const blob = new Blob([html], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = 'task-list-simulator.html';
+  a.click();
+  URL.revokeObjectURL(url);
 
-    // Read current file text so we preserve everything outside the data tag
-    const existingFile = await fileHandle.getFile();
-    let html = await existingFile.text();
-
-    // Replace the content of the saved-slots script tag
-    const json = JSON.stringify(slots);
-    html = html.replace(
-      /(<script id="saved-slots" type="application\/json">)[\s\S]*?(<\/script>)/,
-      `$1${json}$2`
-    );
-
-    // Write back
-    const writable = await fileHandle.createWritable();
-    await writable.write(html);
-    await writable.close();
-
-    // Show confirmation
-    const confirmEl = document.getElementById(`slot-confirm-${confirmSlotIndex}`);
-    if (confirmEl) {
-      confirmEl.classList.add('show');
-      setTimeout(() => confirmEl.classList.remove('show'), 2000);
-    }
-  } catch (err) {
-    if (err.name !== 'AbortError') {
-      alert('Could not save to file: ' + err.message);
-    }
-    // If user cancelled the picker, fileHandle stays null so next save re-prompts
-    fileHandle = null;
+  const confirmEl = document.getElementById(`slot-confirm-${confirmSlotIndex}`);
+  if (confirmEl) {
+    confirmEl.classList.add('show');
+    setTimeout(() => confirmEl.classList.remove('show'), 2000);
   }
 }
 
@@ -526,10 +501,10 @@ function renderSlots() {
     const actionsEl = `<div class="slot-actions">
       <button class="slot-btn slot-btn-load" id="slot-load-${i}"
         onclick="loadSlot(${i})" ${isEmpty ? 'disabled' : ''}>Load</button>
-      <button class="slot-btn slot-btn-save" onclick="saveSlot(${i})">Save</button>
+      <button class="slot-btn slot-btn-save" onclick="saveSlot(${i})">Save ↓</button>
     </div>`;
 
-    const confirmEl = `<div class="slot-confirm" id="slot-confirm-${i}">Saved ✓</div>`;
+    const confirmEl = `<div class="slot-confirm" id="slot-confirm-${i}">Downloaded ✓</div>`;
 
     card.innerHTML = numEl + nameEl + statusEl + actionsEl + confirmEl;
     row.appendChild(card);
