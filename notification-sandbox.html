@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Notification Prioritization Sandbox</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  ::-webkit-scrollbar { height: 8px; width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @keyframes chipIn { from { opacity: 0; transform: translateY(6px) scale(0.9); } to { opacity: 1; transform: none; } }
+  .chip-in { animation: chipIn 0.25s ease-out; }
+  @keyframes sentUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  .sent-in { animation: sentUp 0.35s ease-out; }
+  @keyframes boltFlash { 0% { transform: scale(0.4); opacity: 0; } 40% { transform: scale(1.3); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+  .bolt-in { animation: boltFlash 0.4s ease-out; }
+  @keyframes slideRight { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+  .defer-in { animation: slideRight 0.35s ease-out; }
+
+  .quiet-hatch {
+    background-image: repeating-linear-gradient(135deg, rgba(100,116,139,0.10) 0 8px, rgba(100,116,139,0.22) 8px 16px);
+  }
+  input[type=range].scrub {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 100%;
+    background: transparent; outline: none; cursor: pointer; margin: 0;
+  }
+  input[type=range].scrub::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 14px; height: 34px;
+    border-radius: 4px; background: #ef4444; cursor: grab;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.35); border: 2px solid white;
+  }
+  input[type=range].scrub::-moz-range-thumb {
+    width: 14px; height: 34px; border-radius: 4px; background: #ef4444;
+    cursor: grab; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+  }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800 overflow-hidden">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ============================================================
+   Time utilities — sim time is "minutes since midnight of day 1".
+   The sim day runs from quiet-hours-end (default 08:00 = 480)
+   to the same time next day (480 + 1440 = 1920).
+   ============================================================ */
+const pad2 = n => String(n).padStart(2, "0");
+const parseHM = s => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
+const hm = abs => { const m = ((abs % 1440) + 1440) % 1440; return `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`; };
+const fmtT = abs => hm(abs) + (abs >= 1440 ? " ⁺¹ᵈ" : "");
+const fmtDur = mins => {
+  const h = Math.floor(mins / 60), m = mins % 60;
+  if (h && m) return `${h}h${pad2(m)}m`;
+  if (h) return `${h}h`;
+  return `${m}m`;
+};
+
+/* ============================================================
+   Notification type matrix
+   ============================================================ */
+const BUILTIN_TYPES = {
+  P0: ["Activity Cancelled", "Booking Cancelled", "Safety Alert", "Payment Fraud Alert"],
+  P1: ["Accommodation Details Ready", "Payment Outstanding", "Payment Failure", "Document Rejected", "Visa Update"],
+  P2: ["Tagged in Photo", "Referral Success", "New Message", "Itinerary Update"],
+  P3: ["Tips & Recommendations", "Community Post", "Promo Offer"],
+};
+const PRIOS = ["P0", "P1", "P2", "P3"];
+// Notification Catalog (notification-catalog.html) is the source of truth when present;
+// priorities with no catalog entries fall back to the built-in types so every dropdown stays usable.
+const { TYPE_CATALOG, TYPE_SOURCE } = (() => {
+  try {
+    const cat = JSON.parse(localStorage.getItem("notifCatalog.v1") || "null");
+    if (cat && Array.isArray(cat.notifications) && cat.notifications.length) {
+      const types = { P0: [], P1: [], P2: [], P3: [] };
+      for (const n of cat.notifications) if (types[n.priority] && n.name) types[n.priority].push(n.name);
+      for (const p of PRIOS) if (!types[p].length) types[p] = BUILTIN_TYPES[p];
+      return { TYPE_CATALOG: types, TYPE_SOURCE: `Notification Catalog (${cat.notifications.length})` };
+    }
+  } catch {}
+  return { TYPE_CATALOG: BUILTIN_TYPES, TYPE_SOURCE: "built-in types" };
+})();
+const PRIO_META = {
+  P0: { dot: "bg-red-500",    chip: "bg-red-100 border-red-400 text-red-800",       text: "text-red-600",    label: "P0" },
+  P1: { dot: "bg-orange-400", chip: "bg-orange-100 border-orange-400 text-orange-800", text: "text-orange-600", label: "P1" },
+  P2: { dot: "bg-yellow-400", chip: "bg-yellow-100 border-yellow-400 text-yellow-800", text: "text-yellow-600", label: "P2" },
+  P3: { dot: "bg-green-500",  chip: "bg-green-100 border-green-500 text-green-800",   text: "text-green-700",  label: "P3" },
+};
+
+/* ============================================================
+   Pre-built scenarios
+   ============================================================ */
+const mkScenario = rows => rows.map(([time, priority, type, label], i) =>
+  ({ id: `sc${i}-${time.replace(":", "")}-${priority}`, time, priority, type, label: label || "" }));
+
+const SCENARIOS = {
+  empty: { name: "Empty (start fresh)", notifs: [] },
+  example1: {
+    name: "Example 1 — three P1s in same batch",
+    notifs: mkScenario([
+      ["09:10", "P1", "Accommodation Details Ready"],
+      ["09:20", "P1", "Payment Outstanding"],
+      ["09:45", "P1", "Document Rejected"],
+    ]),
+  },
+  example2: {
+    name: "Example 2 — P2s and P3 only",
+    notifs: mkScenario([
+      ["14:07", "P2", "Tagged in Photo"],
+      ["14:30", "P2", "Referral Success"],
+      ["14:45", "P3", "Tips & Recommendations"],
+    ]),
+  },
+  example3: {
+    name: "Example 3 — full day with end-of-day digest",
+    notifs: mkScenario([
+      ["09:10", "P1", "Accommodation Details Ready"],
+      ["09:20", "P1", "Payment Outstanding"],
+      ["13:05", "P2", "New Message"],
+      ["14:30", "P2", "Referral Success"],
+      ["16:20", "P3", "Community Post"],
+      ["19:40", "P1", "Visa Update"],
+      ["20:15", "P2", "Tagged in Photo"],
+      ["21:05", "P3", "Promo Offer"],
+    ]),
+  },
+  whiteboard: {
+    name: "Whiteboard scenario",
+    notifs: mkScenario([
+      ["09:10", "P1", "Accommodation Details Ready"],
+      ["09:20", "P1", "Payment Outstanding"],
+      ["14:07", "P2", "Tagged in Photo"],
+      ["14:30", "P2", "Referral Success"],
+      ["15:14", "P0", "Activity Cancelled"],
+      ["23:45", "P1", "Document Rejected"],
+    ]),
+  },
+  p0test: {
+    name: "P0 cooldown test",
+    notifs: mkScenario([
+      ["14:07", "P2", "Tagged in Photo"],
+      ["14:30", "P2", "Referral Success"],
+      ["14:45", "P3", "Community Post"],
+      ["15:14", "P0", "Activity Cancelled"],
+    ]),
+  },
+};
+
+const DEFAULT_CONFIG = {
+  windowHours: 2,        // batch window duration
+  batchCap: 1,           // max pushes per batch per user
+  quietStart: "22:00",
+  quietEnd: "08:00",
+  cooldownScope: "batch", // 'batch' | 'h2' | 'h4'
+  p1Behavior: "earliest", // 'earliest' | 'all'
+  bundleThreshold: 2,     // N+ P2/P3 items become one bundle
+  missedEmailHours: 4,
+  digest: true,           // end-of-day digest on last batch pop
+};
+
+/* ============================================================
+   THE ENGINE — a pure function.
+   inputs:  notification list + lever config + current time + read marks
+   outputs: batch states, sent pushes, event log, per-notif status
+   ============================================================ */
+function runEngine(notifs, cfg, now, readMarks) {
+  const dur = cfg.windowHours * 60;
+  const dayStart = parseHM(cfg.quietEnd);
+  let qsAbs = parseHM(cfg.quietStart);
+  if (qsAbs <= dayStart) qsAbs += 1440;
+  const simEnd = dayStart + 1440;
+
+  // Build batch windows across the active period, plus a virtual next-day Batch 1.
+  const batches = [];
+  for (let s = dayStart; s < qsAbs; s += dur) {
+    const e = Math.min(s + dur, qsAbs);
+    batches.push({ i: batches.length, start: s, end: e, popTime: e - 1, nextDay: false,
+                   queue: [], deferredOut: [], cooldown: false, popped: false });
+  }
+  const lastActive = batches.length - 1;
+  const ndIdx = batches.length;
+  batches.push({ i: ndIdx, start: simEnd, end: simEnd + dur, popTime: null, nextDay: true,
+                 queue: [], deferredOut: [], cooldown: false, popped: false });
+
+  const events = [];
+  const pushes = [];
+  const status = {};
+  let cooldownUntil = -1;
+  const heldP0 = [];
+
+  const items = notifs.map(n => {
+    let abs = parseHM(n.time);
+    if (abs < dayStart) abs += 1440; // times before day start belong to the night portion of this sim day
+    return { ...n, abs };
+  }).sort((a, b) => a.abs - b.abs || String(a.id).localeCompare(String(b.id)));
+  items.forEach(n => { status[n.id] = { state: "scheduled", abs: n.abs }; });
+
+  const inQuiet = t => t >= qsAbs;
+  const batchFor = t => inQuiet(t) ? batches[ndIdx]
+    : batches[Math.min(lastActive, Math.floor((t - dayStart) / dur))];
+  const batchName = b => b.nextDay ? "next-day Batch 1" : `Batch ${b.i + 1}`;
+  const T = Math.min(now, simEnd);
+
+  function sendPush(kind, arr, t) {
+    const id = arr.length > 1 ? `bd-${arr.map(x => x.id).join(".")}` : `p-${arr[0].id}`;
+    const push = {
+      id, kind, items: arr, time: t, batchI: batchFor(t).i,
+      emailExpires: t + cfg.missedEmailHours * 60, emailStatus: "counting",
+    };
+    pushes.push(push);
+    arr.forEach(n => { status[n.id] = { ...status[n.id], state: "sent", time: t, pushId: id, bundled: arr.length > 1 }; });
+    return push;
+  }
+
+  function sendP0(n, t) {
+    const b = batchFor(t);
+    const push = sendPush("P0", [n], t);
+    const lines = [`Notification: ${n.label || n.type}`];
+    if (cfg.cooldownScope === "batch") {
+      if (!b.nextDay) { b.cooldown = true; lines.push(`Cooldown activated for Batch ${b.i + 1} (${hm(b.start)}–${hm(b.end)})`); }
+    } else {
+      const h = cfg.cooldownScope === "h2" ? 2 : 4;
+      cooldownUntil = Math.max(cooldownUntil, t + h * 60);
+      lines.push(`Cooldown active until ${fmtT(t + h * 60)}`);
+    }
+    lines.push("Inbox: 1 entry created");
+    lines.push(`Email timer: starts (expires ${fmtT(push.emailExpires)})`);
+    events.push({ time: t, type: "p0", title: "P0 IMMEDIATE SEND", lines });
+  }
+
+  function deferAll(b, entries, reason) {
+    const target = batches[Math.min(b.i + 1, ndIdx)];
+    entries.forEach(en => {
+      en.deferCount = (en.deferCount || 0) + 1;
+      b.deferredOut.push({ ...en, reason });
+      target.queue.push(en);
+      status[en.n.id] = { ...status[en.n.id], state: "deferred", batch: target.i, deferCount: en.deferCount, reason };
+    });
+    return target;
+  }
+
+  for (let t = dayStart; t <= T; t++) {
+    /* 1 — notification triggers */
+    for (const n of items) {
+      if (n.abs !== t) continue;
+      if (n.priority === "P0") {
+        if (inQuiet(t)) {
+          heldP0.push({ n, release: simEnd, done: false });
+          status[n.id] = { ...status[n.id], state: "held" };
+          events.push({ time: t, type: "quiet", title: "P0 DURING QUIET HOURS",
+            lines: [`${n.label || n.type} held — sends at ${fmtT(simEnd)} (quiet hours end)`] });
+        } else sendP0(n, t);
+      } else {
+        const b = batchFor(t);
+        b.queue.push({ n, deferCount: 0 });
+        status[n.id] = { ...status[n.id], state: "queued", batch: b.i };
+        if (b.nextDay) events.push({ time: t, type: "quiet", title: "QUIET HOURS",
+          lines: [`${n.priority} ${n.label || n.type} triggered in quiet hours → queued for next-day Batch 1`] });
+      }
+    }
+    for (const h of heldP0) if (h.release === t && !h.done) { h.done = true; sendP0(h.n, t); }
+
+    /* 2 — batch pops */
+    for (const b of batches) {
+      if (b.popTime !== t || b.popped) continue;
+      b.popped = true;
+      const q = b.queue.splice(0);
+      const isLast = b.i === lastActive;
+      const title = `BATCH ${b.i + 1} POP${isLast && cfg.digest ? " (END-OF-DAY DIGEST)" : ""}`;
+      if (!q.length) { events.push({ time: t, type: "pop", title, lines: ["Queue empty — nothing to send"] }); continue; }
+
+      const lines = [`Queue: ${q.map(e => `${e.n.priority} (${hm(e.n.abs)})`).join(", ")}`];
+      let pushCount = 0;
+
+      const onCooldown = b.cooldown || t < cooldownUntil;
+      if (onCooldown) {
+        lines.push("Cooldown: P0 sent in window → DEFER ALL");
+        const target = deferAll(b, q, "cooldown");
+        q.forEach(e => lines.push(`Deferred: ${e.n.priority} (${hm(e.n.abs)}) → ${batchName(target)}`));
+        events.push({ time: t, type: "pop", title, lines });
+        continue;
+      }
+      lines.push("Cooldown: no P0 in window → proceed");
+
+      const p1s = q.filter(e => e.n.priority === "P1").sort((a, b2) => a.n.abs - b2.n.abs);
+      let lows = q.filter(e => e.n.priority !== "P1").sort((a, b2) => a.n.abs - b2.n.abs);
+
+      if (isLast && cfg.digest) {
+        p1s.forEach(e => { sendPush("digest-P1", [e.n], t); pushCount++; });
+        if (p1s.length) lines.push(`Remaining P1s: send individually (${p1s.length} push${p1s.length > 1 ? "es" : ""})`);
+        if (lows.length >= 2) {
+          sendPush("digest-bundle", lows.map(e => e.n), t); pushCount++;
+          lines.push(`Remaining P2/P3s: bundle into 1 push (${lows.length} items)`);
+        } else if (lows.length === 1) {
+          sendPush("single", [lows[0].n], t); pushCount++;
+          lines.push("Remaining P2/P3: send (1 push)");
+        }
+        lines.push("Queue cleared for today");
+        lines.push(`Inbox: ${pushCount} ${pushCount === 1 ? "entry" : "entries"} created`);
+        events.push({ time: t, type: "pop", title, lines });
+        continue;
+      }
+
+      let budget = cfg.batchCap;
+      let p1sLeft = p1s.slice();
+      if (cfg.p1Behavior === "all") {
+        p1sLeft.forEach(e => { sendPush("P1", [e.n], t); pushCount++;
+          lines.push(`Decision: Send P1 (${hm(e.n.abs)}) — send-all-P1s mode`); });
+        budget = Math.max(0, budget - p1sLeft.length);
+        p1sLeft = [];
+      } else {
+        while (budget > 0 && p1sLeft.length) {
+          const e = p1sLeft.shift();
+          sendPush("P1", [e.n], t); pushCount++; budget--;
+          lines.push(`Decision: Send P1 (${hm(e.n.abs)}) — earliest P1`);
+        }
+      }
+      if (budget > 0 && lows.length) {
+        if (lows.length >= cfg.bundleThreshold) {
+          sendPush("bundle", lows.map(e => e.n), t); pushCount++; budget--;
+          lines.push(`Decision: Bundle ${lows.length} P2/P3 items into 1 push`);
+          lows = [];
+        } else {
+          while (budget > 0 && lows.length) {
+            const e = lows.shift();
+            sendPush("single", [e.n], t); pushCount++; budget--;
+            lines.push(`Decision: Send ${e.n.priority} (${hm(e.n.abs)}) — below bundle threshold`);
+          }
+        }
+      }
+      const remain = [...p1sLeft, ...lows];
+      if (remain.length) {
+        const target = deferAll(b, remain, p1s.length && cfg.p1Behavior !== "all" ? "priority" : "cap");
+        const lowRemain = remain.filter(e => e.n.priority !== "P1");
+        remain.filter(e => e.n.priority === "P1")
+          .forEach(e => lines.push(`Deferred: P1 (${hm(e.n.abs)}) → ${batchName(target)}`));
+        if (lowRemain.length && lowRemain.length === q.filter(e => e.n.priority !== "P1").length)
+          lines.push(`Deferred: All P2/P3 → ${batchName(target)}`);
+        else lowRemain.forEach(e => lines.push(`Deferred: ${e.n.priority} (${hm(e.n.abs)}) → ${batchName(target)}`));
+      }
+      if (pushCount) lines.push(`Inbox: ${pushCount} ${pushCount === 1 ? "entry" : "entries"} created`);
+      events.push({ time: t, type: "pop", title, lines });
+    }
+
+    /* 3 — missed-email timer expiries */
+    for (const p of pushes) {
+      if (p.emailStatus !== "counting" || p.emailExpires !== t) continue;
+      const rm = readMarks[p.id];
+      if (rm != null && rm <= now && rm < p.emailExpires) {
+        p.emailStatus = "read";
+      } else {
+        p.emailStatus = "fired";
+        events.push({ time: t, type: "email", title: "MISSED-NOTIFICATION EMAIL",
+          lines: [`Unread for ${cfg.missedEmailHours}h → email sent: ${p.items.map(n => n.label || n.type).join(", ")}`] });
+      }
+    }
+  }
+
+  // Display-only read flags (a read mark only "exists" once sim time reaches it)
+  for (const p of pushes) {
+    const rm = readMarks[p.id];
+    p.read = rm != null && rm <= now;
+    if (p.read && p.emailStatus === "counting") p.emailStatus = "read";
+  }
+
+  return { batches, events, pushes, status, dayStart, simEnd, qsAbs, ndIdx, lastActive, dur };
+}
+
+/* ============================================================
+   Small shared components
+   ============================================================ */
+function PrioBadge({ p }) {
+  return <span className={`inline-block w-7 text-center text-[10px] font-bold rounded border ${PRIO_META[p].chip}`}>{p}</span>;
+}
+
+function Chip({ n, ghost, deferCount, reason, onClick, selected }) {
+  const m = PRIO_META[n.priority];
+  return (
+    <div onClick={e => { e.stopPropagation(); onClick && onClick(); }}
+      title={`${n.priority} · ${n.label || n.type} · trigger ${n.time}`}
+      className={`chip-in cursor-pointer select-none rounded border px-1.5 py-0.5 mb-1 text-[10px] leading-tight flex items-center gap-1
+        ${m.chip} ${ghost ? "opacity-40 border-dashed" : ""} ${selected ? "ring-2 ring-blue-500" : ""}`}>
+      <span className={`w-2 h-2 rounded-full shrink-0 ${m.dot}`}></span>
+      <span className="font-semibold shrink-0">{n.time}</span>
+      <span className="truncate">{n.label || n.type}</span>
+      {deferCount > 0 && <span className="ml-auto shrink-0 text-[9px] font-bold text-slate-500">→×{deferCount}</span>}
+      {reason === "cooldown" && <span className="shrink-0 text-[9px] font-bold text-red-500">CD</span>}
+    </div>
+  );
+}
+
+function PushChip({ push, now, onClick, selected }) {
+  const first = push.items[0];
+  const m = PRIO_META[first.priority];
+  const isBundle = push.items.length > 1;
+  const label = push.kind === "P0" ? `⚡ ${first.label || first.type}`
+    : isBundle ? `Bundle (${push.items.length})`
+    : (first.label || first.type);
+  let emailLine = null;
+  if (push.read) emailLine = <span className="text-green-600 font-semibold">✓ read</span>;
+  else if (push.emailStatus === "fired") emailLine = <span className="text-purple-600 font-semibold">✉ email sent</span>;
+  else if (push.emailStatus === "counting" && push.emailExpires > now)
+    emailLine = <span className="text-slate-500">✉ {fmtDur(push.emailExpires - now)}</span>;
+  return (
+    <div onClick={e => { e.stopPropagation(); onClick && onClick(); }}
+      title={push.items.map(n => `${n.priority} ${n.label || n.type}`).join(" + ")}
+      className={`${push.kind === "P0" ? "bolt-in" : "sent-in"} cursor-pointer select-none rounded border px-1.5 py-0.5 mb-1 text-[10px] leading-tight
+        ${push.kind === "P0" ? "bg-red-500 border-red-700 text-white" : m.chip}
+        ${push.read ? "opacity-60" : ""} ${selected ? "ring-2 ring-blue-500" : ""}`}>
+      <div className="flex items-center gap-1">
+        <span className="shrink-0">✉️</span>
+        <span className="font-semibold shrink-0">{hm(push.time)}</span>
+        <span className="truncate">{label}</span>
+      </div>
+      {emailLine && <div className="pl-4 text-[9px]">{emailLine}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   TOP BAR — transport controls + clock
+   ============================================================ */
+function TopBar({ playing, setPlaying, speed, setSpeed, now, onReset, atEnd }) {
+  const btn = "px-3 py-1.5 rounded-md text-sm font-semibold transition";
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 bg-white border-b border-slate-300 shadow-sm">
+      <h1 className="text-sm font-bold text-slate-700 mr-2">🔔 Notification Prioritization Sandbox</h1>
+      <button onClick={() => setPlaying(!playing)} disabled={atEnd}
+        className={`${btn} ${playing ? "bg-amber-500 hover:bg-amber-600 text-white" : "bg-blue-600 hover:bg-blue-700 text-white"} disabled:opacity-40`}>
+        {playing ? "⏸ Pause" : "▶ Play"}
+      </button>
+      <button onClick={onReset} className={`${btn} bg-slate-200 hover:bg-slate-300 text-slate-700`}>⏮ Reset</button>
+      <div className="flex items-center gap-1 ml-2">
+        <span className="text-xs text-slate-500">Speed:</span>
+        {[1, 2, 5].map(s => (
+          <button key={s} onClick={() => setSpeed(s)}
+            className={`px-2 py-1 rounded text-xs font-semibold ${speed === s ? "bg-blue-600 text-white" : "bg-slate-200 hover:bg-slate-300 text-slate-600"}`}>
+            {s}x
+          </button>
+        ))}
+      </div>
+      <div className="ml-auto flex items-center gap-2">
+        {atEnd && <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-1 rounded">Day complete</span>}
+        <div className="text-base font-bold tabular-nums bg-slate-800 text-green-300 px-3 py-1 rounded-md">
+          🕐 {hm(now)}{now >= 1440 && <span className="text-[10px] text-green-500 ml-1">+1 day</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   LEFT PANEL — levers, config save/load, scenarios, trigger list
+   ============================================================ */
+function Lever({ label, children }) {
+  return (
+    <div className="flex items-center justify-between gap-2 py-1 border-b border-slate-100">
+      <span className="text-[11px] text-slate-600">{label}</span>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+const inputCls = "border border-slate-300 rounded px-1 py-0.5 text-[11px] bg-white w-20 focus:outline-none focus:ring-1 focus:ring-blue-400";
+
+function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAddForm, addNotif, removeNotif, loadScenario, setSelection, selection }) {
+  const [cfgName, setCfgName] = useState("");
+  const [saved, setSaved] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("notifSandboxConfigs") || "{}"); } catch { return {}; }
+  });
+
+  const saveConfig = () => {
+    const name = cfgName.trim();
+    if (!name) return;
+    const next = { ...saved, [name]: { cfg, notifs } };
+    setSaved(next);
+    localStorage.setItem("notifSandboxConfigs", JSON.stringify(next));
+    setCfgName("");
+  };
+  const loadConfig = name => {
+    const c = saved[name];
+    if (!c) return;
+    setCfg(c.cfg);
+    setNotifs(c.notifs);
+  };
+  const deleteConfig = name => {
+    const next = { ...saved };
+    delete next[name];
+    setSaved(next);
+    localStorage.setItem("notifSandboxConfigs", JSON.stringify(next));
+  };
+
+  const set = (k, v) => setCfg({ ...cfg, [k]: v });
+  const sorted = [...notifs].sort((a, b) => {
+    const aa = engine.status[a.id]?.abs ?? parseHM(a.time);
+    const bb = engine.status[b.id]?.abs ?? parseHM(b.time);
+    return aa - bb;
+  });
+
+  const statusTag = id => {
+    const s = engine.status[id];
+    if (!s) return null;
+    const tags = {
+      scheduled: ["scheduled", "bg-slate-100 text-slate-500"],
+      queued: [`queued B${(s.batch ?? 0) + 1 > engine.lastActive + 1 ? "1⁺¹ᵈ" : (s.batch ?? 0) + 1}`, "bg-blue-100 text-blue-700"],
+      deferred: [`deferred ×${s.deferCount}`, "bg-amber-100 text-amber-700"],
+      sent: [s.bundled ? `bundled ${hm(s.time)}` : `sent ${hm(s.time)}`, "bg-green-100 text-green-700"],
+      held: ["held (quiet)", "bg-purple-100 text-purple-700"],
+    };
+    const [txt, cls] = tags[s.state] || ["?", ""];
+    return <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${cls}`}>{txt}</span>;
+  };
+
+  return (
+    <div className="w-[290px] shrink-0 bg-white border-r border-slate-300 overflow-y-auto flex flex-col">
+      {/* Section A: levers */}
+      <div className="p-3 border-b border-slate-200">
+        <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wide mb-2">⚙️ System Levers</h2>
+        <Lever label="Batch window duration">
+          <select className={inputCls} value={cfg.windowHours} onChange={e => set("windowHours", Number(e.target.value))}>
+            <option value={1}>1 hour</option><option value={2}>2 hours</option><option value={3}>3 hours</option>
+          </select>
+        </Lever>
+        <Lever label="Batch cap (pushes/batch)">
+          <input type="number" min="1" max="5" className={inputCls} value={cfg.batchCap}
+            onChange={e => set("batchCap", Math.max(1, Number(e.target.value) || 1))} />
+        </Lever>
+        <Lever label="Quiet hours start">
+          <input type="time" className={inputCls} value={cfg.quietStart} onChange={e => e.target.value && set("quietStart", e.target.value)} />
+        </Lever>
+        <Lever label="Quiet hours end">
+          <input type="time" className={inputCls} value={cfg.quietEnd} onChange={e => e.target.value && set("quietEnd", e.target.value)} />
+        </Lever>
+        <Lever label="P0 cooldown scope">
+          <select className={`${inputCls} w-24`} value={cfg.cooldownScope} onChange={e => set("cooldownScope", e.target.value)}>
+            <option value="batch">Current batch</option>
+            <option value="h2">Next 2 hours</option>
+            <option value="h4">Next 4 hours</option>
+          </select>
+        </Lever>
+        <Lever label="P1 behavior (multiple)">
+          <select className={`${inputCls} w-24`} value={cfg.p1Behavior} onChange={e => set("p1Behavior", e.target.value)}>
+            <option value="earliest">Earliest, defer rest</option>
+            <option value="all">Send all P1s</option>
+          </select>
+        </Lever>
+        <Lever label="P2/P3 bundle threshold">
+          <input type="number" min="2" max="10" className={inputCls} value={cfg.bundleThreshold}
+            onChange={e => set("bundleThreshold", Math.max(2, Number(e.target.value) || 2))} />
+        </Lever>
+        <Lever label="Missed-email timer (h)">
+          <input type="number" min="1" max="24" className={inputCls} value={cfg.missedEmailHours}
+            onChange={e => set("missedEmailHours", Math.max(1, Number(e.target.value) || 1))} />
+        </Lever>
+        <Lever label="End-of-day digest">
+          <button onClick={() => set("digest", !cfg.digest)}
+            className={`w-20 text-[11px] font-bold rounded px-1 py-0.5 ${cfg.digest ? "bg-green-500 text-white" : "bg-slate-300 text-slate-600"}`}>
+            {cfg.digest ? "ON" : "OFF"}
+          </button>
+        </Lever>
+
+        {/* save / load */}
+        <div className="mt-2 flex gap-1">
+          <input type="text" placeholder="config name…" className={`${inputCls} flex-1 w-auto`}
+            value={cfgName} onChange={e => setCfgName(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && saveConfig()} />
+          <button onClick={saveConfig} disabled={!cfgName.trim()}
+            className="text-[11px] font-semibold bg-blue-600 text-white rounded px-2 py-0.5 hover:bg-blue-700 disabled:opacity-40">Save Config</button>
+        </div>
+        {Object.keys(saved).length > 0 && (
+          <div className="mt-1 space-y-0.5">
+            {Object.keys(saved).map(name => (
+              <div key={name} className="flex items-center gap-1 text-[11px]">
+                <span className="truncate flex-1 text-slate-600">📁 {name}</span>
+                <button onClick={() => loadConfig(name)} className="text-blue-600 hover:underline font-semibold">Load</button>
+                <button onClick={() => deleteConfig(name)} className="text-slate-400 hover:text-red-500">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Section B: triggers */}
+      <div className="p-3 flex-1">
+        <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wide mb-2">📨 Notification Triggers</h2>
+        <select className={`${inputCls} w-full mb-2`} value="" onChange={e => { if (e.target.value) loadScenario(e.target.value); }}>
+          <option value="">Load scenario…</option>
+          {Object.entries(SCENARIOS).map(([k, s]) => <option key={k} value={k}>{s.name}</option>)}
+        </select>
+
+        <div className="space-y-1">
+          {sorted.length === 0 && <div className="text-[11px] text-slate-400 italic py-2">No notifications. Add one below or click the timeline.</div>}
+          {sorted.map(n => (
+            <div key={n.id}
+              onClick={() => setSelection({ kind: "notif", id: n.id })}
+              className={`flex items-center gap-1.5 text-[11px] py-1 px-1.5 rounded cursor-pointer hover:bg-slate-50 border
+                ${selection?.kind === "notif" && selection.id === n.id ? "border-blue-400 bg-blue-50" : "border-transparent"}`}>
+              <span className="font-mono font-semibold text-slate-500">[{n.time}]</span>
+              <PrioBadge p={n.priority} />
+              <span className="truncate flex-1">{n.label || n.type}</span>
+              {statusTag(n.id)}
+              <button onClick={e => { e.stopPropagation(); removeNotif(n.id); }}
+                className="text-slate-300 hover:text-red-500 font-bold px-0.5">✕</button>
+            </div>
+          ))}
+        </div>
+
+        {!addForm && (
+          <button onClick={() => setAddForm({ time: hm(Math.min(now + 30, engine.simEnd - 1)), priority: "P1", type: TYPE_CATALOG.P1[0], label: "" })}
+            className="mt-2 w-full text-[11px] font-semibold border border-dashed border-slate-400 text-slate-600 rounded py-1.5 hover:bg-slate-50 hover:border-blue-400 hover:text-blue-600">
+            + Add Notification
+          </button>
+        )}
+        {addForm && (
+          <div className="mt-2 border border-blue-300 bg-blue-50 rounded p-2 space-y-1.5">
+            <div className="text-[10px] font-bold text-blue-700 uppercase">New notification</div>
+            <div className="flex gap-1 items-center">
+              <input type="time" className={inputCls} value={addForm.time}
+                onChange={e => e.target.value && setAddForm({ ...addForm, time: e.target.value })} />
+              <select className={`${inputCls} w-14`} value={addForm.priority}
+                onChange={e => {
+                  const p = e.target.value;
+                  setAddForm({ ...addForm, priority: p, type: TYPE_CATALOG[p][0] });
+                }}>
+                {PRIOS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <select className={`${inputCls} w-full`} value={addForm.type}
+              onChange={e => setAddForm({ ...addForm, type: e.target.value })}>
+              {TYPE_CATALOG[addForm.priority].map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <input type="text" placeholder="custom label (optional)" className={`${inputCls} w-full`}
+              value={addForm.label} onChange={e => setAddForm({ ...addForm, label: e.target.value })} />
+            <div className="flex gap-1">
+              <button onClick={addNotif} className="flex-1 text-[11px] font-semibold bg-blue-600 text-white rounded py-1 hover:bg-blue-700">Add</button>
+              <button onClick={() => setAddForm(null)} className="flex-1 text-[11px] font-semibold bg-slate-200 text-slate-600 rounded py-1 hover:bg-slate-300">Cancel</button>
+            </div>
+            <div className="text-[9px] text-slate-400">
+              types: {TYPE_SOURCE} · <a href="notification-catalog.html" className="text-blue-500 hover:underline">edit catalog</a>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   CENTER PANEL — swim-lane batch visualization
+   ============================================================ */
+function CenterPanel({ engine, notifs, now, setSelection, selection, onTimelineClick }) {
+  const scrollRef = useRef(null);
+
+  // Column layout: active batches → quiet zone → next-day batch. Piecewise-linear time→px.
+  const cols = useMemo(() => {
+    const c = [];
+    for (const b of engine.batches) {
+      if (b.nextDay) continue;
+      c.push({ key: `b${b.i}`, kind: "batch", batch: b, t0: b.start, t1: b.end, w: Math.max(140, (b.end - b.start) * 1.1) });
+    }
+    c.push({ key: "quiet", kind: "quiet", t0: engine.qsAbs, t1: engine.simEnd, w: 180 });
+    const nd = engine.batches[engine.ndIdx];
+    c.push({ key: "nextday", kind: "batch", batch: nd, t0: nd.start, t1: nd.end, w: 160 });
+    return c;
+  }, [engine.batches, engine.qsAbs, engine.simEnd, engine.ndIdx]);
+
+  const totalW = cols.reduce((a, c) => a + c.w, 0);
+  const timeToX = t => {
+    let x = 0;
+    for (const c of cols) {
+      if (t < c.t1) return x + Math.max(0, (t - c.t0)) / (c.t1 - c.t0) * c.w;
+      x += c.w;
+    }
+    return x;
+  };
+  const xToTime = x => {
+    let acc = 0;
+    for (const c of cols) {
+      if (x < acc + c.w) return Math.round(c.t0 + (x - acc) / c.w * (c.t1 - c.t0));
+      acc += c.w;
+    }
+    return engine.simEnd - 1;
+  };
+
+  // Keep the playhead in view while playing
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const x = timeToX(now);
+    if (x < el.scrollLeft + 40 || x > el.scrollLeft + el.clientWidth - 80)
+      el.scrollTo({ left: Math.max(0, x - el.clientWidth / 3), behavior: "smooth" });
+  }, [Math.floor(now / 30)]); // eslint-disable-line
+
+  // Scheduled (future) notifications shown as ghosts in their target batch
+  const ghosts = useMemo(() => {
+    const map = {};
+    for (const n of notifs) {
+      const s = engine.status[n.id];
+      if (!s || s.state !== "scheduled") continue;
+      const abs = s.abs;
+      const bi = abs >= engine.qsAbs ? engine.ndIdx
+        : Math.min(engine.lastActive, Math.floor((abs - engine.dayStart) / engine.dur));
+      (map[bi] = map[bi] || []).push(n);
+    }
+    return map;
+  }, [notifs, engine]);
+
+  const pushesByBatch = useMemo(() => {
+    const map = {};
+    for (const p of engine.pushes) (map[p.batchI] = map[p.batchI] || []).push(p);
+    return map;
+  }, [engine.pushes]);
+
+  const handleClick = e => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const x = e.clientX - rect.left + el.scrollLeft - 56; // 56px lane-label gutter
+    if (x < 0) return;
+    const t = xToTime(x);
+    if (t >= engine.simEnd) return;
+    onTimelineClick(Math.max(engine.dayStart, Math.min(t, engine.simEnd - 1)));
+  };
+
+  const laneCls = "px-1 pt-1 overflow-y-auto";
+  const SENT_H = 92, QUEUE_H = 116, DEFER_H = 84;
+
+  return (
+    <div className="flex-1 min-w-0 flex flex-col bg-slate-50">
+      <div className="px-3 py-1.5 flex items-center gap-3 border-b border-slate-200 bg-white">
+        <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wide">Timeline & Batches</h2>
+        <span className="text-[10px] text-slate-400">click anywhere on the timeline to add a notification at that time</span>
+        <div className="ml-auto flex items-center gap-2 text-[10px] text-slate-600">
+          {PRIOS.map(p => <span key={p} className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${PRIO_META[p].dot}`}></span>{p}</span>)}
+        </div>
+      </div>
+
+      <div ref={scrollRef} className="flex-1 overflow-auto relative" onClick={handleClick}>
+        <div className="relative flex" style={{ width: totalW + 56, minHeight: "100%" }}>
+          {/* lane label gutter — sticky so it stays visible while scrolling */}
+          <div className="sticky left-0 w-[56px] shrink-0 z-20 bg-slate-50 border-r border-slate-200 text-[9px] font-bold text-slate-400 uppercase">
+            <div className="h-[52px] border-b border-slate-300"></div>
+            <div style={{ height: SENT_H }} className="flex items-center justify-center border-b border-slate-200">Sent</div>
+            <div style={{ height: QUEUE_H }} className="flex items-center justify-center border-b border-slate-200">Queue</div>
+            <div style={{ height: DEFER_H }} className="flex items-center justify-center">Defer</div>
+          </div>
+
+          <div className="flex">
+            {cols.map(col => {
+              if (col.kind === "quiet") {
+                return (
+                  <div key={col.key} style={{ width: col.w }} className="shrink-0 border-r border-slate-300 quiet-hatch bg-slate-200">
+                    <div className="h-[52px] px-2 py-1 border-b border-slate-300">
+                      <div className="text-[10px] font-bold text-slate-500">🌙 QUIET HOURS</div>
+                      <div className="text-[9px] text-slate-500">{hm(col.t0)} – {hm(col.t1)}</div>
+                      <div className="text-[9px] text-slate-400 italic">notifications slide to next day →</div>
+                    </div>
+                    <div style={{ height: SENT_H + QUEUE_H + DEFER_H }} className="flex items-center justify-center">
+                      <span className="text-2xl opacity-30">😴</span>
+                    </div>
+                  </div>
+                );
+              }
+              const b = col.batch;
+              const popped = b.popped;
+              const active = now >= b.start && now < b.end;
+              const onCd = b.cooldown;
+              return (
+                <div key={col.key} style={{ width: col.w }}
+                  className={`shrink-0 border-r border-slate-300 ${b.nextDay ? "bg-indigo-50/60" : active ? "bg-blue-50/70" : "bg-white"}`}>
+                  <div className={`h-[52px] px-2 py-1 border-b border-slate-300 ${onCd ? "bg-red-50" : ""}`}>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] font-bold text-slate-600">
+                        {b.nextDay ? "BATCH 1 ⁺¹ᵈ" : `BATCH ${b.i + 1}`}
+                      </span>
+                      {onCd && <span className="text-[8px] font-bold bg-red-500 text-white rounded px-1">COOLDOWN</span>}
+                      {popped && !b.nextDay && <span className="text-[8px] font-bold bg-slate-400 text-white rounded px-1">POPPED</span>}
+                    </div>
+                    <div className="text-[9px] text-slate-500">{hm(b.start)} – {hm(b.end)}</div>
+                    {b.popTime != null && <div className="text-[9px] text-slate-400">pop @ {hm(b.popTime)}</div>}
+                    {b.nextDay && <div className="text-[9px] text-indigo-400 italic">beyond sim end</div>}
+                  </div>
+                  {/* SENT lane */}
+                  <div style={{ height: SENT_H }} className={`${laneCls} bg-green-50/40 border-b border-slate-200`}>
+                    {(pushesByBatch[b.i] || []).map(p => (
+                      <PushChip key={p.id} push={p} now={now}
+                        selected={selection?.kind === "push" && selection.id === p.id}
+                        onClick={() => setSelection({ kind: "push", id: p.id })} />
+                    ))}
+                  </div>
+                  {/* QUEUE lane */}
+                  <div style={{ height: QUEUE_H }} className={`${laneCls} border-b border-slate-200`}>
+                    {b.queue.map(en => (
+                      <Chip key={en.n.id} n={en.n} deferCount={en.deferCount}
+                        selected={selection?.kind === "notif" && selection.id === en.n.id}
+                        onClick={() => setSelection({ kind: "notif", id: en.n.id })} />
+                    ))}
+                    {(ghosts[b.i] || []).map(n => (
+                      <Chip key={`g-${n.id}`} n={n} ghost
+                        selected={selection?.kind === "notif" && selection.id === n.id}
+                        onClick={() => setSelection({ kind: "notif", id: n.id })} />
+                    ))}
+                  </div>
+                  {/* DEFERRED lane */}
+                  <div style={{ height: DEFER_H }} className={`${laneCls} bg-amber-50/40`}>
+                    {b.deferredOut.map((en, i) => (
+                      <div key={`${en.n.id}-${i}`} className="defer-in flex items-center gap-0.5">
+                        <span className="text-amber-500 text-[10px] font-bold">→</span>
+                        <div className="flex-1 min-w-0">
+                          <Chip n={en.n} reason={en.reason}
+                            selected={selection?.kind === "notif" && selection.id === en.n.id}
+                            onClick={() => setSelection({ kind: "notif", id: en.n.id })} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* playhead */}
+          <div className="absolute top-0 bottom-0 w-[2px] bg-red-500 z-10 pointer-events-none"
+            style={{ left: 56 + timeToX(now) }}>
+            <div className="absolute -top-0 -translate-x-1/2 bg-red-500 text-white text-[9px] font-bold px-1 rounded-b">
+              {hm(now)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   RIGHT PANEL — event log
+   ============================================================ */
+const EVENT_STYLE = {
+  pop:   { border: "border-blue-400",   title: "text-blue-700" },
+  p0:    { border: "border-red-500",    title: "text-red-700" },
+  email: { border: "border-purple-400", title: "text-purple-700" },
+  quiet: { border: "border-slate-400",  title: "text-slate-600" },
+};
+
+function formatLogText(events) {
+  return events.map(ev =>
+    `${hm(ev.time)}  ${ev.title}\n` + ev.lines.map(l => `       ${l}`).join("\n")
+  ).join("\n");
+}
+
+function RightPanel({ events }) {
+  const ref = useRef(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [events.length]);
+
+  const copy = () => {
+    navigator.clipboard.writeText(formatLogText(events)).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
+  return (
+    <div className="w-[330px] shrink-0 bg-slate-900 flex flex-col border-l border-slate-300">
+      <div className="px-3 py-1.5 flex items-center justify-between border-b border-slate-700">
+        <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wide">📜 Event Log</h2>
+        <button onClick={copy}
+          className="text-[10px] font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 rounded px-2 py-0.5">
+          {copied ? "✓ Copied" : "Copy log"}
+        </button>
+      </div>
+      <div ref={ref} className="flex-1 overflow-y-auto p-2 space-y-2 font-mono">
+        {events.length === 0 && <div className="text-[11px] text-slate-500 italic p-2">Press ▶ Play — engine decisions appear here.</div>}
+        {events.map((ev, i) => {
+          const st = EVENT_STYLE[ev.type] || EVENT_STYLE.pop;
+          return (
+            <div key={i} className={`border-l-2 ${st.border} pl-2`}>
+              <div className={`text-[11px] font-bold ${st.title}`}>
+                <span className="text-slate-400 mr-2">{hm(ev.time)}</span>{ev.title}
+              </div>
+              {ev.lines.map((l, j) => (
+                <div key={j} className="text-[10px] text-slate-300 pl-3 leading-snug">{l}</div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   BOTTOM — timeline scrubber
+   ============================================================ */
+function Scrubber({ engine, notifs, now, setNow }) {
+  const span = engine.simEnd - engine.dayStart;
+  const pct = t => `${((t - engine.dayStart) / span) * 100}%`;
+  const activeBatches = engine.batches.filter(b => !b.nextDay);
+
+  return (
+    <div className="bg-white border-t border-slate-300 px-4 pt-1 pb-2">
+      <div className="relative h-[34px]">
+        {/* quiet zone shading */}
+        <div className="absolute top-[6px] h-[22px] rounded bg-slate-300/60 quiet-hatch"
+          style={{ left: pct(engine.qsAbs), width: pct(engine.simEnd - engine.qsAbs + engine.dayStart) }}></div>
+        {/* batch boundaries + pop ticks */}
+        {activeBatches.map(b => (
+          <React.Fragment key={b.i}>
+            <div className="absolute top-[6px] h-[22px] w-px bg-slate-400" style={{ left: pct(b.start) }}></div>
+            <div className="absolute top-[10px] h-[14px] w-px bg-blue-400" style={{ left: pct(b.popTime) }} title={`Batch ${b.i + 1} pop @ ${hm(b.popTime)}`}></div>
+            <div className="absolute top-0 text-[8px] font-bold text-slate-400 -translate-x-1/2"
+              style={{ left: pct((b.start + b.end) / 2) }}>B{b.i + 1}</div>
+          </React.Fragment>
+        ))}
+        <div className="absolute top-0 text-[8px] font-bold text-slate-400 -translate-x-1/2"
+          style={{ left: pct((engine.qsAbs + engine.simEnd) / 2) }}>QUIET</div>
+        {/* notification trigger dots */}
+        {notifs.map(n => {
+          const s = engine.status[n.id];
+          const abs = s?.abs ?? parseHM(n.time);
+          return <div key={n.id} title={`${n.time} ${n.priority} ${n.label || n.type}`}
+            className={`absolute top-[13px] w-2 h-2 rounded-full border border-white -translate-x-1/2 ${PRIO_META[n.priority].dot}`}
+            style={{ left: pct(abs) }}></div>;
+        })}
+        {/* the range input on top */}
+        <input type="range" className="scrub absolute inset-0" min={engine.dayStart} max={engine.simEnd} step={1}
+          value={now} onChange={e => setNow(Number(e.target.value))} />
+      </div>
+      <div className="flex justify-between text-[9px] text-slate-400 font-mono">
+        <span>{hm(engine.dayStart)}</span>
+        <span>{hm(engine.qsAbs)} quiet</span>
+        <span>{hm(engine.simEnd)} ⁺¹ᵈ</span>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   DETAIL CARD — chip / push inspector
+   ============================================================ */
+function DetailCard({ selection, setSelection, engine, notifs, now, toggleRead, removeNotif }) {
+  if (!selection) return null;
+  let body = null;
+
+  if (selection.kind === "notif") {
+    const n = notifs.find(x => x.id === selection.id);
+    if (!n) return null;
+    const s = engine.status[n.id] || {};
+    const stateText = {
+      scheduled: "Scheduled — not yet triggered",
+      queued: `Queued in ${s.batch === engine.ndIdx ? "next-day Batch 1" : `Batch ${(s.batch ?? 0) + 1}`}`,
+      deferred: `Deferred ×${s.deferCount} → ${s.batch === engine.ndIdx ? "next-day Batch 1" : `Batch ${(s.batch ?? 0) + 1}`}${s.reason === "cooldown" ? " (P0 cooldown)" : ""}`,
+      sent: `${s.bundled ? "Sent in bundle" : "Sent"} at ${fmtT(s.time)}`,
+      held: "P0 held during quiet hours",
+    }[s.state] || "—";
+    body = (
+      <React.Fragment>
+        <div className="flex items-center gap-2 mb-1">
+          <PrioBadge p={n.priority} />
+          <span className="text-xs font-bold">{n.label || n.type}</span>
+        </div>
+        <div className="text-[11px] text-slate-600">Type: {n.type}</div>
+        <div className="text-[11px] text-slate-600">Trigger time: {n.time}</div>
+        <div className="text-[11px] text-slate-600">Status: <span className="font-semibold">{stateText}</span></div>
+        <button onClick={() => { removeNotif(n.id); setSelection(null); }}
+          className="mt-2 text-[10px] font-semibold text-red-600 border border-red-300 rounded px-2 py-0.5 hover:bg-red-50">Remove notification</button>
+      </React.Fragment>
+    );
+  } else {
+    const p = engine.pushes.find(x => x.id === selection.id);
+    if (!p) return null;
+    body = (
+      <React.Fragment>
+        <div className="text-xs font-bold mb-1">
+          ✉️ {p.kind === "P0" ? "P0 immediate push" : p.items.length > 1 ? `Bundled push (${p.items.length} items)` : "Push"} @ {fmtT(p.time)}
+        </div>
+        {p.items.map(n => (
+          <div key={n.id} className="flex items-center gap-1.5 text-[11px] text-slate-600">
+            <PrioBadge p={n.priority} /><span>{n.label || n.type}</span><span className="text-slate-400">({n.time})</span>
+          </div>
+        ))}
+        <div className="text-[11px] text-slate-600 mt-1">
+          Email timer: {p.read ? "cancelled (read)" : p.emailStatus === "fired" ? `expired — email sent at ${fmtT(p.emailExpires)}`
+            : p.emailExpires > now ? `${fmtDur(p.emailExpires - now)} remaining (expires ${fmtT(p.emailExpires)})` : "—"}
+        </div>
+        <button onClick={() => toggleRead(p.id)}
+          className={`mt-2 text-[10px] font-semibold rounded px-2 py-0.5 border ${p.read ? "text-slate-600 border-slate-300 hover:bg-slate-50" : "text-green-700 border-green-400 hover:bg-green-50"}`}>
+          {p.read ? "Mark as unread" : "✓ Mark as read"}
+        </button>
+      </React.Fragment>
+    );
+  }
+
+  return (
+    <div className="absolute bottom-3 left-3 z-30 w-64 bg-white rounded-lg shadow-xl border border-slate-300 p-3">
+      <button onClick={() => setSelection(null)} className="absolute top-1 right-2 text-slate-400 hover:text-slate-600 text-xs font-bold">✕</button>
+      {body}
+    </div>
+  );
+}
+
+/* ============================================================
+   APP
+   ============================================================ */
+function App() {
+  const [cfg, setCfg] = useState(DEFAULT_CONFIG);
+  const [notifs, setNotifs] = useState(SCENARIOS.whiteboard.notifs);
+  const [now, setNowRaw] = useState(parseHM(DEFAULT_CONFIG.quietEnd));
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [readMarks, setReadMarks] = useState({});
+  const [selection, setSelection] = useState(null);
+  const [addForm, setAddForm] = useState(null);
+  const idCounter = useRef(0);
+
+  const engine = useMemo(() => runEngine(notifs, cfg, now, readMarks), [notifs, cfg, now, readMarks]);
+
+  const setNow = useCallback(t => {
+    setNowRaw(Math.max(engine.dayStart, Math.min(t, engine.simEnd)));
+  }, [engine.dayStart, engine.simEnd]);
+
+  // play loop: every 50ms advance `speed` sim-minutes
+  useEffect(() => {
+    if (!playing) return;
+    const iv = setInterval(() => {
+      setNowRaw(t => {
+        const next = t + speed;
+        if (next >= engine.simEnd) { setPlaying(false); return engine.simEnd; }
+        return next;
+      });
+    }, 50);
+    return () => clearInterval(iv);
+  }, [playing, speed, engine.simEnd]);
+
+  // keep `now` in bounds if quiet-hours config moves the sim window
+  useEffect(() => {
+    setNowRaw(t => Math.max(engine.dayStart, Math.min(t, engine.simEnd)));
+  }, [engine.dayStart, engine.simEnd]);
+
+  const onReset = () => {
+    setPlaying(false);
+    setNowRaw(engine.dayStart);
+    setReadMarks({});
+    setSelection(null);
+  };
+
+  const loadScenario = key => {
+    setPlaying(false);
+    setNotifs(SCENARIOS[key].notifs);
+    setNowRaw(engine.dayStart);
+    setReadMarks({});
+    setSelection(null);
+    setAddForm(null);
+  };
+
+  const addNotif = () => {
+    if (!addForm) return;
+    const id = `n${idCounter.current++}-${Date.now() % 100000}`;
+    setNotifs([...notifs, { id, time: addForm.time, priority: addForm.priority, type: addForm.type, label: addForm.label.trim() }]);
+    setAddForm(null);
+  };
+
+  const removeNotif = id => {
+    setNotifs(notifs.filter(n => n.id !== id));
+    if (selection?.kind === "notif" && selection.id === id) setSelection(null);
+  };
+
+  const toggleRead = pushId => {
+    setReadMarks(rm => {
+      const next = { ...rm };
+      if (next[pushId] != null && next[pushId] <= now) delete next[pushId];
+      else next[pushId] = now;
+      return next;
+    });
+  };
+
+  const onTimelineClick = t => {
+    setAddForm({ time: hm(t), priority: "P1", type: TYPE_CATALOG.P1[0], label: "" });
+  };
+
+  return (
+    <div className="h-screen flex flex-col">
+      <TopBar playing={playing} setPlaying={setPlaying} speed={speed} setSpeed={setSpeed}
+        now={now} onReset={onReset} atEnd={now >= engine.simEnd} />
+      <div className="flex-1 min-h-0 flex relative">
+        <LeftPanel cfg={cfg} setCfg={setCfg} notifs={notifs} setNotifs={setNotifs} engine={engine}
+          now={now} addForm={addForm} setAddForm={setAddForm} addNotif={addNotif}
+          removeNotif={removeNotif} loadScenario={loadScenario}
+          setSelection={setSelection} selection={selection} />
+        <CenterPanel engine={engine} notifs={notifs} now={now}
+          setSelection={setSelection} selection={selection} onTimelineClick={onTimelineClick} />
+        <RightPanel events={engine.events} />
+        <DetailCard selection={selection} setSelection={setSelection} engine={engine}
+          notifs={notifs} now={now} toggleRead={toggleRead} removeNotif={removeNotif} />
+      </div>
+      <Scrubber engine={engine} notifs={notifs} now={now} setNow={setNow} />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
