@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Notification Catalog</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  ::-webkit-scrollbar { height: 8px; width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(6px) scale(0.96); } to { opacity: 1; transform: none; } }
+  .card-in { animation: cardIn 0.2s ease-out; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800 overflow-hidden">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } = React;
+
+/* ============================================================
+   Constants — palette shared with notification-sandbox.html
+   ============================================================ */
+const STORAGE_KEY = "notifCatalog.v1";
+const PRIOS = ["P0", "P1", "P2", "P3"];
+const PRIO_META = {
+  P0: { dot: "bg-red-500",    chip: "bg-red-100 border-red-400 text-red-800",          card: "bg-red-50 border-red-400" },
+  P1: { dot: "bg-orange-400", chip: "bg-orange-100 border-orange-400 text-orange-800",  card: "bg-orange-50 border-orange-300" },
+  P2: { dot: "bg-yellow-400", chip: "bg-yellow-100 border-yellow-400 text-yellow-800",  card: "bg-yellow-50 border-yellow-300" },
+  P3: { dot: "bg-green-500",  chip: "bg-green-100 border-green-500 text-green-800",     card: "bg-green-50 border-green-400" },
+};
+const STATUSES = ["idea", "planned", "live"];
+const STATUS_META = {
+  idea:    { dot: "bg-slate-400", chip: "bg-slate-100 text-slate-600" },
+  planned: { dot: "bg-blue-500",  chip: "bg-blue-100 text-blue-700" },
+  live:    { dot: "bg-green-500", chip: "bg-green-100 text-green-700" },
+};
+const ANCHOR_SUGGESTIONS = ["Booking created", "Departure date", "Payment due date", "Onboarding started"];
+
+const uid = () => `n${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+/* ============================================================
+   Trigger rendering — whiteboard-style "Trig: <...>" strings
+   ============================================================ */
+function triggerLabel(tr) {
+  if (!tr) return "—";
+  if (tr.kind === "time_based") {
+    const o = tr.offsetDays || 0;
+    const t = o === 0 ? "T=0" : o > 0 ? `T+${o}` : `T${o}`;
+    return tr.condition ? `${t} and ${tr.condition}` : t;
+  }
+  const target = tr.object && tr.field ? `${tr.object}.${tr.field}` : (tr.object || tr.field || "");
+  return [target, tr.condition].filter(Boolean).join(" ") || "—";
+}
+
+/* ============================================================
+   Flow ordering — topological sort over `next` edges within a
+   category; ties broken by time offset, then name.
+   ============================================================ */
+function flowOrder(list) {
+  const ids = new Set(list.map(n => n.id));
+  const indeg = {}; const out = {};
+  list.forEach(n => { indeg[n.id] = 0; out[n.id] = []; });
+  list.forEach(n => (n.next || []).forEach(t => {
+    if (ids.has(t)) { out[n.id].push(t); indeg[t]++; }
+  }));
+  const sortKey = n => [n.trigger?.kind === "time_based" ? (n.trigger.offsetDays ?? 0) : Infinity, n.name];
+  const cmp = (a, b) => {
+    const [ka, na] = sortKey(a), [kb, nb] = sortKey(b);
+    return ka !== kb ? ka - kb : na.localeCompare(nb);
+  };
+  const ordered = [];
+  let avail = list.filter(n => indeg[n.id] === 0).sort(cmp);
+  const placed = new Set();
+  while (avail.length) {
+    const n = avail.shift();
+    ordered.push(n); placed.add(n.id);
+    const unlocked = [];
+    out[n.id].forEach(t => { if (--indeg[t] === 0) unlocked.push(t); });
+    if (unlocked.length) {
+      avail = avail.concat(list.filter(x => unlocked.includes(x.id))).sort(cmp);
+    }
+  }
+  // cycles or leftovers: append in sort order
+  list.filter(n => !placed.has(n.id)).sort(cmp).forEach(n => ordered.push(n));
+  return ordered;
+}
+
+/* ============================================================
+   Seed — contents of the planning whiteboards
+   ============================================================ */
+const fc = (object, field, condition) => ({ kind: "field_change", object, field, condition });
+const tb = (anchor, offsetDays, condition) => ({ kind: "time_based", anchor, offsetDays, condition });
+const N = (id, categoryId, priority, name, trigger, extra = {}) =>
+  ({ id, categoryId, priority, name, trigger, status: "planned", copyTitle: "", copyBody: "", notes: "", next: [], ...extra });
+
+const SEED = {
+  version: 1,
+  categories: [
+    { id: "cat-onboarding",    name: "Complete Onboarding Profile", order: 0 },
+    { id: "cat-accommodation", name: "Accommodation",               order: 1 },
+    { id: "cat-travel",        name: "Travel Logistics",            order: 2 },
+    { id: "cat-documents",     name: "Documents and Checklists",    order: 3 },
+    { id: "cat-referrals",     name: "Referrals",                   order: 4 },
+    { id: "cat-activities",    name: "Activities",                  order: 5 },
+    { id: "cat-payments",      name: "Payments",                    order: 6 },
+  ],
+  notifications: [
+    N("onb-returner",   "cat-onboarding", "P0", "Onboarding Returner",          fc("Booking", "", "Returner makes new booking")),
+    N("onb-incomplete", "cat-onboarding", "P1", "Incomplete Onboarding",        fc("Contact", "Onboarding_Status", "incomplete")),
+    N("onb-inc-daily",  "cat-onboarding", "P1", "Incomplete Onboarding (Daily)", tb("Onboarding started", 1, "still incomplete"),
+      { notes: "Repeats daily while onboarding remains incomplete." }),
+
+    N("acc-ready",  "cat-accommodation", "P1", "Accommodation Details Ready", fc("Booking", "Accommodation_Details", "Added")),
+    N("acc-update", "cat-accommodation", "P0", "Accommodation Update",        fc("Booking", "Accommodation_Details", "Changed")),
+
+    N("trv-flight-avail",   "cat-travel", "P1", "Flight Details Available",      fc("Booking", "Itinerary", "Added")),
+    N("trv-flight-changed", "cat-travel", "P0", "Flight Changed",                fc("Booking", "Itinerary", "Changed")),
+    N("trv-transfer",       "cat-travel", "P1", "Airport Transfer Not Confirmed", fc("Booking", "Flight_Details", "missing and transfer booked")),
+
+    N("doc-update",    "cat-documents", "P0", "Document Update",          fc("Document", "Status", "= Rejected")),
+    N("doc-attention", "cat-documents", "P1", "Document Needs Attention", fc("Document", "Checklist", "incomplete docs")),
+    N("doc-new",       "cat-documents", "P1", "New To-Do Document",       fc("Document", "", "new doc visible in control centre")),
+
+    N("ref-joined", "cat-referrals", "P1", "Friend Joined Link", fc("Referral", "", "referral created account")),
+    N("ref-booked", "cat-referrals", "P1", "Friend Booked",      fc("Referral", "", "referral made booking")),
+
+    N("act-booked",    "cat-activities", "P1", "Activity Booked",     fc("Activity", "Status", "= Confirmed")),
+    N("act-cancelled", "cat-activities", "P0", "Activity Cancelled",  fc("Activity", "Status", "= Cancelled")),
+    N("act-plan",      "cat-activities", "P1", "Plan Your Activities", fc("Activity", "", "booking window open")),
+
+    N("pay-upcoming",    "cat-payments", "P1", "Upcoming Payment",       tb("Payment due date", -3, ""),               { next: ["pay-success", "pay-failed"] }),
+    N("pay-success",     "cat-payments", "P0", "Payment Successful",     tb("Payment due date", 0, "Pay Pass")),
+    N("pay-failed",      "cat-payments", "P0", "Payment Failed",         tb("Payment due date", 0, "Pay Fail"),        { next: ["pay-overdue"] }),
+    N("pay-overdue",     "cat-payments", "P1", "Overdue Payment Notice", tb("Payment due date", 3, "No Pay"),          { next: ["pay-outstanding"] }),
+    N("pay-outstanding", "cat-payments", "P1", "Pay Still Outstanding",  tb("Payment due date", 4, "No Pay"),          { next: ["pay-misscall"] }),
+    N("pay-misscall",    "cat-payments", "P1", "Missed CS Call",         tb("Payment due date", 5, "No Call"),         { next: ["pay-reminder"] }),
+    N("pay-reminder",    "cat-payments", "P1", "Payment Reminder",       tb("Payment due date", 12, "No Pay"),         { next: ["pay-latewarn"] }),
+    N("pay-latewarn",    "cat-payments", "P1", "Late Pay Warning",       tb("Payment due date", 18, "No Pay"),         { next: ["pay-prepenalty"] }),
+    N("pay-prepenalty",  "cat-payments", "P0", "Pre Penalty Warning",    tb("Payment due date", 25, "No Pay"),         { next: ["pay-latefee"] }),
+    N("pay-latefee",     "cat-payments", "P0", "Late Fee Applied",       tb("Payment due date", 30, "No Pay")),
+  ],
+};
+
+/* ============================================================
+   Persistence + export helpers
+   ============================================================ */
+function validateCatalog(d) {
+  return d && typeof d === "object" && Array.isArray(d.categories) && Array.isArray(d.notifications)
+    && d.notifications.every(n => n.id && n.name != null && n.categoryId && PRIOS.includes(n.priority));
+}
+function loadData() {
+  try {
+    const d = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    if (validateCatalog(d)) return d;
+  } catch {}
+  return JSON.parse(JSON.stringify(SEED));
+}
+function toMarkdown(data) {
+  const cats = [...data.categories].sort((a, b) => a.order - b.order);
+  return cats.map(c => {
+    const rows = flowOrder(data.notifications.filter(n => n.categoryId === c.id));
+    if (!rows.length) return null;
+    const byId = Object.fromEntries(data.notifications.map(n => [n.id, n]));
+    return `## ${c.name}\n\n| Priority | Notification | Trigger | Status | Chains into | Notes |\n|---|---|---|---|---|---|\n` +
+      rows.map(n => `| ${n.priority} | ${n.name} | ${triggerLabel(n.trigger)}${n.trigger.kind === "time_based" && n.trigger.anchor ? ` _(anchor: ${n.trigger.anchor})_` : ""} | ${n.status} | ${(n.next || []).map(t => byId[t]?.name).filter(Boolean).join(", ") || "—"} | ${(n.notes || "").replace(/\n/g, " ") || "—"} |`).join("\n");
+  }).filter(Boolean).join("\n\n");
+}
+
+/* ============================================================
+   Small shared bits
+   ============================================================ */
+function PrioBadge({ p }) {
+  return <span className={`inline-block w-7 text-center text-[10px] font-bold rounded border shrink-0 ${PRIO_META[p].chip}`}>{p}</span>;
+}
+function StatusDot({ s, withLabel }) {
+  return (
+    <span className="flex items-center gap-1 shrink-0" title={`status: ${s}`}>
+      <span className={`w-2 h-2 rounded-full ${STATUS_META[s]?.dot || "bg-slate-300"}`}></span>
+      {withLabel && <span className="text-[10px] text-slate-500">{s}</span>}
+    </span>
+  );
+}
+const inputCls = "border border-slate-300 rounded px-1.5 py-1 text-[12px] bg-white w-full focus:outline-none focus:ring-1 focus:ring-blue-400";
+const selectCls = "border border-slate-300 rounded px-1 py-1 text-[12px] bg-white focus:outline-none focus:ring-1 focus:ring-blue-400";
+
+function matchesFilters(n, filters, catName) {
+  if (filters.priority && n.priority !== filters.priority) return false;
+  if (filters.status && n.status !== filters.status) return false;
+  if (filters.kind && n.trigger?.kind !== filters.kind) return false;
+  if (filters.search) {
+    const hay = `${n.name} ${triggerLabel(n.trigger)} ${n.trigger?.anchor || ""} ${n.notes || ""} ${n.copyTitle || ""} ${catName || ""}`.toLowerCase();
+    if (!hay.includes(filters.search.toLowerCase())) return false;
+  }
+  return true;
+}
+
+/* ============================================================
+   Notification card (board view)
+   ============================================================ */
+function NotifCard({ n, dimmed, selected, onClick, cardRef }) {
+  const m = PRIO_META[n.priority];
+  return (
+    <div ref={cardRef} onClick={e => { e.stopPropagation(); onClick(); }}
+      className={`card-in cursor-pointer select-none rounded-lg border-2 px-2.5 py-1.5 w-[168px] shadow-sm transition
+        ${m.card} ${dimmed ? "opacity-25" : "hover:shadow-md"} ${selected ? "ring-2 ring-blue-500" : ""}`}>
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <PrioBadge p={n.priority} />
+        <span className="text-[11px] font-bold leading-tight flex-1">{n.name}</span>
+        <StatusDot s={n.status} />
+      </div>
+      <div className="text-[10px] text-slate-600 leading-snug">
+        Trig: &lt;{triggerLabel(n.trigger)}&gt;
+      </div>
+      {n.trigger?.kind === "time_based" && n.trigger.anchor &&
+        <div className="text-[9px] text-slate-400 italic">⏱ {n.trigger.anchor}</div>}
+      {(n.notes || n.copyTitle) &&
+        <div className="text-[9px] text-slate-400 mt-0.5">{n.copyTitle ? "💬" : ""}{n.notes ? "📝" : ""}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   Category panel with SVG chain arrows
+   ============================================================ */
+function CategoryPanel({ cat, notifs, filters, selection, setSelection, addNotif, renameCategory, deleteCategory }) {
+  const panelRef = useRef(null);
+  const cardRefs = useRef({});
+  const [paths, setPaths] = useState([]);
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(cat.name);
+
+  const ordered = useMemo(() => flowOrder(notifs), [notifs]);
+  const ids = useMemo(() => new Set(notifs.map(n => n.id)), [notifs]);
+  const edges = useMemo(() => {
+    const e = [];
+    notifs.forEach(n => (n.next || []).forEach(t => { if (ids.has(t)) e.push([n.id, t]); }));
+    return e;
+  }, [notifs, ids]);
+
+  const measure = useCallback(() => {
+    const panel = panelRef.current;
+    if (!panel || !edges.length) { setPaths(p => (p.length ? [] : p)); return; }
+    const pr = panel.getBoundingClientRect();
+    const next = [];
+    for (const [a, b] of edges) {
+      const ea = cardRefs.current[a], eb = cardRefs.current[b];
+      if (!ea || !eb) continue;
+      const ra = ea.getBoundingClientRect(), rb = eb.getBoundingClientRect();
+      const A = { l: ra.left - pr.left, r: ra.right - pr.left, t: ra.top - pr.top, b: ra.bottom - pr.top,
+                  cx: ra.left - pr.left + ra.width / 2, cy: ra.top - pr.top + ra.height / 2 };
+      const B = { l: rb.left - pr.left, r: rb.right - pr.left, t: rb.top - pr.top, b: rb.bottom - pr.top,
+                  cx: rb.left - pr.left + rb.width / 2, cy: rb.top - pr.top + rb.height / 2 };
+      let d;
+      if (B.l >= A.r - 4) {           // target is to the right → horizontal curve
+        d = `M ${A.r} ${A.cy} C ${A.r + 18} ${A.cy}, ${B.l - 18} ${B.cy}, ${B.l - 2} ${B.cy}`;
+      } else if (B.t >= A.b - 4) {    // target is below (row wrap) → vertical curve
+        d = `M ${A.cx} ${A.b} C ${A.cx} ${A.b + 22}, ${B.cx} ${B.t - 22}, ${B.cx} ${B.t - 2}`;
+      } else {                        // fallback: loop over the top
+        d = `M ${A.cx} ${A.t} C ${A.cx} ${A.t - 24}, ${B.cx} ${B.t - 24}, ${B.cx} ${B.t - 2}`;
+      }
+      next.push(d);
+    }
+    setPaths(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+  }, [edges]);
+
+  useLayoutEffect(measure, [measure, ordered, filters]);
+  useEffect(() => {
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [measure]);
+
+  const commitRename = () => {
+    setRenaming(false);
+    if (nameDraft.trim() && nameDraft.trim() !== cat.name) renameCategory(cat.id, nameDraft.trim());
+    else setNameDraft(cat.name);
+  };
+
+  return (
+    <div className="bg-blue-50/60 border border-blue-200 rounded-xl shadow-sm">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-blue-200 bg-white rounded-t-xl">
+        {renaming ? (
+          <input autoFocus className={`${inputCls} font-bold`} value={nameDraft}
+            onChange={e => setNameDraft(e.target.value)}
+            onBlur={commitRename} onKeyDown={e => e.key === "Enter" && commitRename()} />
+        ) : (
+          <h3 className="text-sm font-bold text-slate-700 flex-1">{cat.name}</h3>
+        )}
+        {!renaming && <span className="text-[10px] text-slate-400">{notifs.length}</span>}
+        {!renaming && (
+          <React.Fragment>
+            <button onClick={() => { setNameDraft(cat.name); setRenaming(true); }}
+              title="Rename category" className="text-slate-300 hover:text-blue-500 text-xs">✎</button>
+            <button onClick={() => deleteCategory(cat.id)} title={notifs.length ? "Remove notifications first" : "Delete category"}
+              disabled={notifs.length > 0}
+              className="text-slate-300 hover:text-red-500 disabled:hover:text-slate-300 disabled:opacity-40 text-xs font-bold">✕</button>
+          </React.Fragment>
+        )}
+      </div>
+      <div ref={panelRef} className="relative p-3">
+        <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
+          <defs>
+            <marker id={`arr-${cat.id}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b" />
+            </marker>
+          </defs>
+          {paths.map((d, i) => (
+            <path key={i} d={d} fill="none" stroke="#64748b" strokeWidth="1.5" markerEnd={`url(#arr-${cat.id})`} />
+          ))}
+        </svg>
+        <div className="relative z-[1] flex flex-wrap gap-x-9 gap-y-7">
+          {ordered.map(n => (
+            <NotifCard key={n.id} n={n}
+              cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
+              dimmed={!matchesFilters(n, filters, cat.name)}
+              selected={selection === n.id}
+              onClick={() => setSelection(n.id)} />
+          ))}
+          <button onClick={() => addNotif(cat.id)}
+            className="w-[168px] min-h-[58px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
+            + Add notification
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   Table view
+   ============================================================ */
+function TableView({ data, filters, selection, setSelection }) {
+  const [sort, setSort] = useState({ key: "category", dir: 1 });
+  const byId = useMemo(() => Object.fromEntries(data.notifications.map(n => [n.id, n])), [data.notifications]);
+  const catById = useMemo(() => Object.fromEntries(data.categories.map(c => [c.id, c])), [data.categories]);
+
+  const rows = useMemo(() => {
+    const catOrder = Object.fromEntries(data.categories.map(c => [c.id, c.order]));
+    const getKey = n => ({
+      name: n.name.toLowerCase(),
+      category: catOrder[n.categoryId] ?? 99,
+      priority: n.priority,
+      trigger: triggerLabel(n.trigger).toLowerCase(),
+      status: STATUSES.indexOf(n.status),
+    }[sort.key]);
+    return data.notifications
+      .filter(n => matchesFilters(n, filters, catById[n.categoryId]?.name))
+      .sort((a, b) => {
+        const ka = getKey(a), kb = getKey(b);
+        return (ka < kb ? -1 : ka > kb ? 1 : a.name.localeCompare(b.name)) * sort.dir;
+      });
+  }, [data, filters, sort, catById]);
+
+  const Th = ({ k, children }) => (
+    <th onClick={() => setSort(s => ({ key: k, dir: s.key === k ? -s.dir : 1 }))}
+      className="px-2 py-1.5 text-left text-[10px] font-bold text-slate-500 uppercase cursor-pointer hover:text-blue-600 select-none whitespace-nowrap">
+      {children}{sort.key === k ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
+    </th>
+  );
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-auto">
+      <table className="w-full text-[12px]">
+        <thead className="border-b border-slate-200 sticky top-0 bg-white">
+          <tr>
+            <Th k="priority">Prio</Th><Th k="name">Notification</Th><Th k="category">Category</Th>
+            <Th k="trigger">Trigger</Th><Th k="status">Status</Th>
+            <th className="px-2 py-1.5 text-left text-[10px] font-bold text-slate-500 uppercase">Copy title</th>
+            <th className="px-2 py-1.5 text-left text-[10px] font-bold text-slate-500 uppercase">Chains into</th>
+            <th className="px-2 py-1.5 text-left text-[10px] font-bold text-slate-500 uppercase">Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(n => (
+            <tr key={n.id} onClick={() => setSelection(n.id)}
+              className={`border-b border-slate-100 cursor-pointer hover:bg-blue-50 ${selection === n.id ? "bg-blue-50" : ""}`}>
+              <td className="px-2 py-1.5"><PrioBadge p={n.priority} /></td>
+              <td className="px-2 py-1.5 font-semibold whitespace-nowrap">{n.name}</td>
+              <td className="px-2 py-1.5 text-slate-500 whitespace-nowrap">{catById[n.categoryId]?.name || "?"}</td>
+              <td className="px-2 py-1.5 font-mono text-[11px] text-slate-600">
+                {triggerLabel(n.trigger)}
+                {n.trigger?.kind === "time_based" && n.trigger.anchor &&
+                  <span className="text-slate-400 font-sans italic"> · {n.trigger.anchor}</span>}
+              </td>
+              <td className="px-2 py-1.5"><span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${STATUS_META[n.status]?.chip}`}>{n.status}</span></td>
+              <td className="px-2 py-1.5 text-slate-500 max-w-[160px] truncate">{n.copyTitle || "—"}</td>
+              <td className="px-2 py-1.5 text-slate-500 max-w-[160px] truncate">{(n.next || []).map(t => byId[t]?.name).filter(Boolean).join(", ") || "—"}</td>
+              <td className="px-2 py-1.5 text-slate-400 max-w-[200px] truncate">{n.notes || "—"}</td>
+            </tr>
+          ))}
+          {rows.length === 0 && <tr><td colSpan="8" className="px-3 py-6 text-center text-slate-400 italic">No notifications match the filters.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ============================================================
+   Editor drawer — live-edits the selected notification
+   ============================================================ */
+function Field({ label, children }) {
+  return (
+    <div>
+      <div className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function EditorDrawer({ n, data, update, remove, close }) {
+  if (!n) return null;
+  const tr = n.trigger || { kind: "field_change", object: "", field: "", condition: "" };
+  const setTr = patch => update(n.id, { trigger: { ...tr, ...patch } });
+  const others = data.notifications.filter(x => x.id !== n.id);
+  const byId = Object.fromEntries(data.notifications.map(x => [x.id, x]));
+  const predecessors = data.notifications.filter(x => (x.next || []).includes(n.id));
+  const catName = id => data.categories.find(c => c.id === id)?.name || "?";
+
+  return (
+    <div className="w-[300px] shrink-0 bg-white border-l border-slate-300 overflow-y-auto p-3 space-y-3">
+      <div className="flex items-center gap-2">
+        <PrioBadge p={n.priority} />
+        <h3 className="text-sm font-bold flex-1 truncate">{n.name || "New notification"}</h3>
+        <button onClick={close} className="text-slate-400 hover:text-slate-600 font-bold">✕</button>
+      </div>
+
+      <Field label="Name">
+        <input className={inputCls} value={n.name} onChange={e => update(n.id, { name: e.target.value })} />
+      </Field>
+
+      <div className="flex gap-2">
+        <Field label="Priority">
+          <select className={selectCls} value={n.priority} onChange={e => update(n.id, { priority: e.target.value })}>
+            {PRIOS.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+        <Field label="Status">
+          <select className={selectCls} value={n.status} onChange={e => update(n.id, { status: e.target.value })}>
+            {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Field>
+        <div className="flex-1">
+          <Field label="Category">
+            <select className={`${selectCls} w-full`} value={n.categoryId} onChange={e => update(n.id, { categoryId: e.target.value })}>
+              {[...data.categories].sort((a, b) => a.order - b.order).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        </div>
+      </div>
+
+      {/* trigger builder */}
+      <div className="border border-slate-200 rounded-lg p-2 space-y-2 bg-slate-50">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-bold text-slate-400 uppercase">Trigger</span>
+          <div className="flex rounded overflow-hidden border border-slate-300 text-[10px] font-semibold">
+            <button onClick={() => setTr({ kind: "field_change" })}
+              className={`px-2 py-0.5 ${tr.kind === "field_change" ? "bg-blue-600 text-white" : "bg-white text-slate-500"}`}>Field change</button>
+            <button onClick={() => setTr({ kind: "time_based" })}
+              className={`px-2 py-0.5 ${tr.kind === "time_based" ? "bg-blue-600 text-white" : "bg-white text-slate-500"}`}>Time-based</button>
+          </div>
+        </div>
+        {tr.kind === "field_change" ? (
+          <React.Fragment>
+            <div className="flex gap-2">
+              <Field label="SF Object"><input className={inputCls} placeholder="Booking" value={tr.object || ""} onChange={e => setTr({ object: e.target.value })} /></Field>
+              <Field label="SF Field"><input className={inputCls} placeholder="Accommodation_Details" value={tr.field || ""} onChange={e => setTr({ field: e.target.value })} /></Field>
+            </div>
+            <Field label="Condition"><input className={inputCls} placeholder="Changed / Added / = Rejected" value={tr.condition || ""} onChange={e => setTr({ condition: e.target.value })} /></Field>
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <Field label="Anchor event">
+                  <input className={inputCls} list="anchors" placeholder="Payment due date" value={tr.anchor || ""} onChange={e => setTr({ anchor: e.target.value })} />
+                </Field>
+              </div>
+              <div className="w-20">
+                <Field label="Offset (d)">
+                  <input className={inputCls} type="number" value={tr.offsetDays ?? 0} onChange={e => setTr({ offsetDays: Number(e.target.value) || 0 })} />
+                </Field>
+              </div>
+            </div>
+            <Field label="Extra condition (optional)"><input className={inputCls} placeholder="No Pay" value={tr.condition || ""} onChange={e => setTr({ condition: e.target.value })} /></Field>
+          </React.Fragment>
+        )}
+        <div className="text-[11px] font-mono text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-1">
+          Trig: &lt;{triggerLabel(tr)}&gt;
+        </div>
+      </div>
+
+      <Field label="Copy — push title">
+        <input className={inputCls} placeholder="e.g. Your accommodation is ready 🏠" value={n.copyTitle || ""} onChange={e => update(n.id, { copyTitle: e.target.value })} />
+      </Field>
+      <Field label="Copy — push body">
+        <textarea className={`${inputCls} h-14 resize-y`} value={n.copyBody || ""} onChange={e => update(n.id, { copyBody: e.target.value })} />
+      </Field>
+      <Field label="Notes / open questions">
+        <textarea className={`${inputCls} h-16 resize-y`} value={n.notes || ""} onChange={e => update(n.id, { notes: e.target.value })} />
+      </Field>
+
+      {/* chain edges */}
+      <Field label="Chains into">
+        <div className="space-y-1">
+          {(n.next || []).map(t => (
+            <div key={t} className="flex items-center gap-1 text-[11px] bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5">
+              <span className="flex-1 truncate">→ {byId[t]?.name || t}
+                {byId[t] && byId[t].categoryId !== n.categoryId &&
+                  <span className="text-slate-400 italic"> ({catName(byId[t].categoryId)})</span>}
+              </span>
+              <button onClick={() => update(n.id, { next: n.next.filter(x => x !== t) })}
+                className="text-slate-300 hover:text-red-500 font-bold">✕</button>
+            </div>
+          ))}
+          <select className={`${selectCls} w-full`} value=""
+            onChange={e => { if (e.target.value) update(n.id, { next: [...(n.next || []), e.target.value] }); }}>
+            <option value="">+ add successor…</option>
+            {others.filter(x => !(n.next || []).includes(x.id)).map(x =>
+              <option key={x.id} value={x.id}>{x.name} ({catName(x.categoryId)})</option>)}
+          </select>
+          <div className="text-[9px] text-slate-400 italic">Arrows draw on the board when both cards share a category.</div>
+        </div>
+      </Field>
+      {predecessors.length > 0 && (
+        <Field label="Chained from">
+          <div className="text-[11px] text-slate-500">{predecessors.map(p => p.name).join(", ")}</div>
+        </Field>
+      )}
+
+      <button onClick={() => { if (confirm(`Delete "${n.name}"?`)) { remove(n.id); } }}
+        className="w-full text-[11px] font-semibold text-red-600 border border-red-300 rounded py-1.5 hover:bg-red-50">
+        Delete notification
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   APP
+   ============================================================ */
+function App() {
+  const [data, setData] = useState(loadData);
+  const [view, setView] = useState("board");
+  const [filters, setFilters] = useState({ priority: "", status: "", kind: "", search: "" });
+  const [selection, setSelection] = useState(null);
+  const [flash, setFlash] = useState("");
+  const fileRef = useRef(null);
+
+  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }, [data]);
+
+  const say = msg => { setFlash(msg); setTimeout(() => setFlash(""), 1800); };
+
+  const update = (id, patch) =>
+    setData(d => ({ ...d, notifications: d.notifications.map(n => n.id === id ? { ...n, ...patch } : n) }));
+  const remove = id => {
+    setData(d => ({
+      ...d,
+      notifications: d.notifications.filter(n => n.id !== id)
+        .map(n => n.next?.includes(id) ? { ...n, next: n.next.filter(x => x !== id) } : n),
+    }));
+    setSelection(null);
+  };
+  const addNotif = categoryId => {
+    const id = uid();
+    setData(d => ({
+      ...d,
+      notifications: [...d.notifications, N(id, categoryId, "P1", "", { kind: "field_change", object: "", field: "", condition: "" }, { status: "idea" })],
+    }));
+    setSelection(id);
+  };
+  const addCategory = () => {
+    const name = prompt("Category name:");
+    if (!name || !name.trim()) return;
+    setData(d => ({ ...d, categories: [...d.categories, { id: uid(), name: name.trim(), order: d.categories.length }] }));
+  };
+  const renameCategory = (id, name) =>
+    setData(d => ({ ...d, categories: d.categories.map(c => c.id === id ? { ...c, name } : c) }));
+  const deleteCategory = id =>
+    setData(d => d.notifications.some(n => n.categoryId === id) ? d
+      : { ...d, categories: d.categories.filter(c => c.id !== id) });
+
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "notification-catalog.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const copyJSON = () => navigator.clipboard.writeText(JSON.stringify(data, null, 2)).then(() => say("JSON copied"));
+  const copyMD = () => navigator.clipboard.writeText(toMarkdown(data)).then(() => say("Markdown copied"));
+  const importJSON = file => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const d = JSON.parse(reader.result);
+        if (!validateCatalog(d)) throw new Error("not a catalog file");
+        if (confirm(`Import ${d.notifications.length} notifications in ${d.categories.length} categories? This replaces the current catalog.`)) {
+          setData(d); setSelection(null); say("Imported");
+        }
+      } catch (e) { alert("Import failed: " + e.message); }
+    };
+    reader.readAsText(file);
+  };
+  const resetSeed = () => {
+    if (confirm("Reset the catalog to the whiteboard seed? Current edits will be lost.")) {
+      setData(JSON.parse(JSON.stringify(SEED))); setSelection(null); say("Reset to seed");
+    }
+  };
+
+  const selected = data.notifications.find(n => n.id === selection) || null;
+  const cats = [...data.categories].sort((a, b) => a.order - b.order);
+  const btn = "text-[11px] font-semibold rounded px-2 py-1 transition";
+
+  return (
+    <div className="h-screen flex flex-col">
+      <datalist id="anchors">{ANCHOR_SUGGESTIONS.map(a => <option key={a} value={a} />)}</datalist>
+
+      {/* top bar */}
+      <div className="flex items-center gap-2 px-4 py-2 bg-white border-b border-slate-300 shadow-sm flex-wrap">
+        <h1 className="text-sm font-bold text-slate-700">🗂 Notification Catalog</h1>
+        <span className="text-[10px] text-slate-400 mr-2">source of truth · autosaves locally</span>
+        <div className="flex rounded-md overflow-hidden border border-slate-300">
+          <button onClick={() => setView("board")} className={`${btn} rounded-none ${view === "board" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}>Board</button>
+          <button onClick={() => setView("table")} className={`${btn} rounded-none ${view === "table" ? "bg-blue-600 text-white" : "bg-white text-slate-500 hover:bg-slate-50"}`}>Table</button>
+        </div>
+
+        <select className={selectCls} value={filters.priority} onChange={e => setFilters({ ...filters, priority: e.target.value })}>
+          <option value="">All priorities</option>{PRIOS.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select className={selectCls} value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}>
+          <option value="">All statuses</option>{STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select className={selectCls} value={filters.kind} onChange={e => setFilters({ ...filters, kind: e.target.value })}>
+          <option value="">All triggers</option>
+          <option value="field_change">Field change</option>
+          <option value="time_based">Time-based</option>
+        </select>
+        <input className={`${selectCls} w-36`} placeholder="search…" value={filters.search}
+          onChange={e => setFilters({ ...filters, search: e.target.value })} />
+
+        <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+          {flash && <span className="text-[11px] font-semibold text-green-700 bg-green-100 rounded px-2 py-0.5">{flash}</span>}
+          <button onClick={exportJSON} className={`${btn} bg-blue-600 text-white hover:bg-blue-700`}>Export JSON</button>
+          <button onClick={copyJSON} className={`${btn} bg-slate-200 text-slate-700 hover:bg-slate-300`}>Copy JSON</button>
+          <button onClick={copyMD} className={`${btn} bg-slate-200 text-slate-700 hover:bg-slate-300`}>Copy Markdown</button>
+          <button onClick={() => fileRef.current?.click()} className={`${btn} bg-slate-200 text-slate-700 hover:bg-slate-300`}>Import</button>
+          <input ref={fileRef} type="file" accept=".json,application/json" className="hidden"
+            onChange={e => { if (e.target.files?.[0]) importJSON(e.target.files[0]); e.target.value = ""; }} />
+          <button onClick={resetSeed} className={`${btn} text-slate-500 hover:text-red-600`} title="Reset to whiteboard seed">↺ Seed</button>
+          <a href="notification-sandbox.html" className={`${btn} bg-indigo-100 text-indigo-700 hover:bg-indigo-200`}>→ Sandbox</a>
+        </div>
+      </div>
+
+      {/* main area */}
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-w-0 overflow-auto p-4">
+          {view === "board" ? (
+            <div className="space-y-4 max-w-[1500px]">
+              <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))" }}>
+                {cats.map(cat => {
+                  const notifs = data.notifications.filter(n => n.categoryId === cat.id);
+                  // categories with chains get full width so the flow can breathe
+                  const hasChain = notifs.some(n => (n.next || []).some(t => notifs.find(x => x.id === t)));
+                  return (
+                    <div key={cat.id} style={hasChain ? { gridColumn: "1 / -1" } : undefined}>
+                      <CategoryPanel cat={cat} notifs={notifs} filters={filters}
+                        selection={selection} setSelection={setSelection}
+                        addNotif={addNotif} renameCategory={renameCategory} deleteCategory={deleteCategory} />
+                    </div>
+                  );
+                })}
+                <button onClick={addCategory}
+                  className="min-h-[100px] rounded-xl border-2 border-dashed border-slate-300 text-slate-400 font-semibold text-sm hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
+                  + Add category
+                </button>
+              </div>
+            </div>
+          ) : (
+            <TableView data={data} filters={filters} selection={selection} setSelection={setSelection} />
+          )}
+        </div>
+        <EditorDrawer n={selected} data={data} update={update} remove={remove} close={() => setSelection(null)} />
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

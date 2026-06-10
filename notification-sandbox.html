@@ -66,13 +66,27 @@ const fmtDur = mins => {
 /* ============================================================
    Notification type matrix
    ============================================================ */
-const TYPE_CATALOG = {
+const BUILTIN_TYPES = {
   P0: ["Activity Cancelled", "Booking Cancelled", "Safety Alert", "Payment Fraud Alert"],
   P1: ["Accommodation Details Ready", "Payment Outstanding", "Payment Failure", "Document Rejected", "Visa Update"],
   P2: ["Tagged in Photo", "Referral Success", "New Message", "Itinerary Update"],
   P3: ["Tips & Recommendations", "Community Post", "Promo Offer"],
 };
 const PRIOS = ["P0", "P1", "P2", "P3"];
+// Notification Catalog (notification-catalog.html) is the source of truth when present;
+// priorities with no catalog entries fall back to the built-in types so every dropdown stays usable.
+const { TYPE_CATALOG, TYPE_SOURCE } = (() => {
+  try {
+    const cat = JSON.parse(localStorage.getItem("notifCatalog.v1") || "null");
+    if (cat && Array.isArray(cat.notifications) && cat.notifications.length) {
+      const types = { P0: [], P1: [], P2: [], P3: [] };
+      for (const n of cat.notifications) if (types[n.priority] && n.name) types[n.priority].push(n.name);
+      for (const p of PRIOS) if (!types[p].length) types[p] = BUILTIN_TYPES[p];
+      return { TYPE_CATALOG: types, TYPE_SOURCE: `Notification Catalog (${cat.notifications.length})` };
+    }
+  } catch {}
+  return { TYPE_CATALOG: BUILTIN_TYPES, TYPE_SOURCE: "built-in types" };
+})();
 const PRIO_META = {
   P0: { dot: "bg-red-500",    chip: "bg-red-100 border-red-400 text-red-800",       text: "text-red-600",    label: "P0" },
   P1: { dot: "bg-orange-400", chip: "bg-orange-100 border-orange-400 text-orange-800", text: "text-orange-600", label: "P1" },
@@ -627,6 +641,9 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
             <div className="flex gap-1">
               <button onClick={addNotif} className="flex-1 text-[11px] font-semibold bg-blue-600 text-white rounded py-1 hover:bg-blue-700">Add</button>
               <button onClick={() => setAddForm(null)} className="flex-1 text-[11px] font-semibold bg-slate-200 text-slate-600 rounded py-1 hover:bg-slate-300">Cancel</button>
+            </div>
+            <div className="text-[9px] text-slate-400">
+              types: {TYPE_SOURCE} · <a href="notification-catalog.html" className="text-blue-500 hover:underline">edit catalog</a>
             </div>
           </div>
         )}
