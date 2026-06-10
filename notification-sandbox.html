@@ -517,6 +517,25 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
     localStorage.setItem("notifSandboxScenarios", JSON.stringify(next));
   };
 
+  // random scenario: distinct types sampled from the catalog, scattered across the active day
+  const randomize = () => {
+    const pool = PRIOS.flatMap(p => TYPE_CATALOG[p].map(type => ({ priority: p, type })));
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    const count = Math.min(pool.length, 5 + Math.floor(Math.random() * 5)); // 5–9
+    const dayStart = parseHM(cfg.quietEnd);
+    const picked = pool.slice(0, count)
+      .map((x, i) => ({
+        id: `rnd${Date.now() % 100000}-${i}`,
+        time: hm(dayStart + Math.floor(Math.random() * ((1440 - dayStart) / 5)) * 5),
+        priority: x.priority, type: x.type, label: "",
+      }))
+      .sort((a, b) => parseHM(a.time) - parseHM(b.time));
+    loadScenario(picked);
+  };
+
   const set = (k, v) => setCfg({ ...cfg, [k]: v });
   const sorted = [...notifs].sort((a, b) => {
     const aa = engine.status[a.id]?.abs ?? parseHM(a.time);
@@ -610,7 +629,8 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
       {/* Section B: triggers */}
       <div className="p-3 flex-1">
         <h2 className="text-xs font-bold text-slate-700 uppercase tracking-wide mb-2">📨 Notification Triggers</h2>
-        <select className={`${inputCls} w-full mb-2`} value=""
+        <div className="flex gap-1 mb-2">
+        <select className={`${inputCls} flex-1 w-auto`} value=""
           onChange={e => {
             const v = e.target.value;
             if (!v) return;
@@ -627,6 +647,9 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
             </optgroup>
           )}
         </select>
+        <button onClick={randomize} title="Random notifications from the catalog at random times"
+          className="text-[11px] font-semibold bg-slate-200 text-slate-700 rounded px-2 hover:bg-slate-300 shrink-0">🎲 Random</button>
+        </div>
 
         <div className="flex gap-1 mb-2">
           <input type="text" placeholder="scenario name…" className={`${inputCls} flex-1 w-auto`}
