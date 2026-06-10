@@ -62,6 +62,12 @@ function triggerLabel(tr) {
    Flow ordering — topological sort over `next` edges within a
    category; ties broken by time offset, then name.
    ============================================================ */
+const flowCmp = (a, b) => {
+  const key = n => n.trigger?.kind === "time_based" ? (n.trigger.offsetDays ?? 0) : Infinity;
+  const ka = key(a), kb = key(b);
+  return ka !== kb ? ka - kb : a.name.localeCompare(b.name);
+};
+
 function flowOrder(list) {
   const ids = new Set(list.map(n => n.id));
   const indeg = {}; const out = {};
@@ -69,13 +75,8 @@ function flowOrder(list) {
   list.forEach(n => (n.next || []).forEach(t => {
     if (ids.has(t)) { out[n.id].push(t); indeg[t]++; }
   }));
-  const sortKey = n => [n.trigger?.kind === "time_based" ? (n.trigger.offsetDays ?? 0) : Infinity, n.name];
-  const cmp = (a, b) => {
-    const [ka, na] = sortKey(a), [kb, nb] = sortKey(b);
-    return ka !== kb ? ka - kb : na.localeCompare(nb);
-  };
   const ordered = [];
-  let avail = list.filter(n => indeg[n.id] === 0).sort(cmp);
+  let avail = list.filter(n => indeg[n.id] === 0).sort(flowCmp);
   const placed = new Set();
   while (avail.length) {
     const n = avail.shift();
@@ -83,12 +84,70 @@ function flowOrder(list) {
     const unlocked = [];
     out[n.id].forEach(t => { if (--indeg[t] === 0) unlocked.push(t); });
     if (unlocked.length) {
-      avail = avail.concat(list.filter(x => unlocked.includes(x.id))).sort(cmp);
+      avail = avail.concat(list.filter(x => unlocked.includes(x.id))).sort(flowCmp);
     }
   }
   // cycles or leftovers: append in sort order
-  list.filter(n => !placed.has(n.id)).sort(cmp).forEach(n => ordered.push(n));
+  list.filter(n => !placed.has(n.id)).sort(flowCmp).forEach(n => ordered.push(n));
   return ordered;
+}
+
+/* ============================================================
+   Flow graph — layered layout for the board. Back-edges (loops,
+   e.g. monthly recurring payments) are split out and drawn as
+   dashed return lines; remaining DAG nodes get a column per
+   longest-path depth, so branches stack vertically like the
+   whiteboard. Cards with no edges at all render as a plain row.
+   ============================================================ */
+function flowGraph(list) {
+  const ids = new Set(list.map(n => n.id));
+  const out = {};
+  list.forEach(n => { out[n.id] = (n.next || []).filter(t => ids.has(t)); });
+
+  // nodes that take part in a flow (have an in- or out-edge inside this category)
+  const connected = new Set();
+  list.forEach(n => out[n.id].forEach(t => { connected.add(n.id); connected.add(t); }));
+  const isolated = list.filter(n => !connected.has(n.id)).sort(flowCmp);
+  const flow = list.filter(n => connected.has(n.id));
+
+  // DFS from sorted roots to classify back-edges (cycle closers)
+  const indeg = {}; flow.forEach(n => indeg[n.id] = 0);
+  flow.forEach(n => out[n.id].forEach(t => indeg[t]++));
+  const state = {}; const backEdges = [];
+  const dfs = id => {
+    state[id] = 1;
+    for (const t of out[id]) {
+      if (state[t] === 1) backEdges.push([id, t]);
+      else if (!state[t]) dfs(t);
+    }
+    state[id] = 2;
+  };
+  [...flow].sort(flowCmp).forEach(n => { if (!indeg[n.id] && !state[n.id]) dfs(n.id); });
+  flow.forEach(n => { if (!state[n.id]) dfs(n.id); });
+  const backSet = new Set(backEdges.map(e => e.join("→")));
+  const fwd = {};
+  flow.forEach(n => { fwd[n.id] = out[n.id].filter(t => !backSet.has(`${n.id}→${t}`)); });
+
+  // longest-path layering over the remaining DAG
+  const indeg2 = {}; flow.forEach(n => indeg2[n.id] = 0);
+  flow.forEach(n => fwd[n.id].forEach(t => indeg2[t]++));
+  const layer = {}; flow.forEach(n => layer[n.id] = 0);
+  const queue = flow.filter(n => !indeg2[n.id]).map(n => n.id);
+  while (queue.length) {
+    const id = queue.shift();
+    for (const t of fwd[id]) {
+      layer[t] = Math.max(layer[t], layer[id] + 1);
+      if (--indeg2[t] === 0) queue.push(t);
+    }
+  }
+  const maxLayer = flow.reduce((m, n) => Math.max(m, layer[n.id]), 0);
+  const layers = Array.from({ length: flow.length ? maxLayer + 1 : 0 }, () => []);
+  flow.forEach(n => layers[layer[n.id]].push(n));
+  layers.forEach(col => col.sort(flowCmp));
+
+  const fwdEdges = [];
+  flow.forEach(n => fwd[n.id].forEach(t => fwdEdges.push([n.id, t])));
+  return { isolated, layers, fwdEdges, backEdges };
 }
 
 /* ============================================================
@@ -135,7 +194,8 @@ const SEED = {
     N("act-plan",      "cat-activities", "P1", "Plan Your Activities", fc("Activity", "", "booking window open")),
 
     N("pay-upcoming",    "cat-payments", "P1", "Upcoming Payment",       tb("Payment due date", -3, ""),               { next: ["pay-success", "pay-failed"] }),
-    N("pay-success",     "cat-payments", "P0", "Payment Successful",     tb("Payment due date", 0, "Pay Pass")),
+    N("pay-success",     "cat-payments", "P0", "Payment Successful",     tb("Payment due date", 0, "Pay Pass"),
+      { notes: "Flow ends here for this month — next month's Upcoming Payment starts a new cycle." }),
     N("pay-failed",      "cat-payments", "P0", "Payment Failed",         tb("Payment due date", 0, "Pay Fail"),        { next: ["pay-overdue"] }),
     N("pay-overdue",     "cat-payments", "P1", "Overdue Payment Notice", tb("Payment due date", 3, "No Pay"),          { next: ["pay-outstanding"] }),
     N("pay-outstanding", "cat-payments", "P1", "Pay Still Outstanding",  tb("Payment due date", 4, "No Pay"),          { next: ["pay-misscall"] }),
@@ -143,7 +203,8 @@ const SEED = {
     N("pay-reminder",    "cat-payments", "P1", "Payment Reminder",       tb("Payment due date", 12, "No Pay"),         { next: ["pay-latewarn"] }),
     N("pay-latewarn",    "cat-payments", "P1", "Late Pay Warning",       tb("Payment due date", 18, "No Pay"),         { next: ["pay-prepenalty"] }),
     N("pay-prepenalty",  "cat-payments", "P0", "Pre Penalty Warning",    tb("Payment due date", 25, "No Pay"),         { next: ["pay-latefee"] }),
-    N("pay-latefee",     "cat-payments", "P0", "Late Fee Applied",       tb("Payment due date", 30, "No Pay")),
+    N("pay-latefee",     "cat-payments", "P0", "Late Fee Applied",       tb("Payment due date", 30, "No Pay"),
+      { next: ["pay-upcoming"], notes: "Loops back to Upcoming Payment — payments recur monthly." }),
   ],
 };
 
@@ -229,47 +290,48 @@ function NotifCard({ n, dimmed, selected, onClick, cardRef }) {
    Category panel with SVG chain arrows
    ============================================================ */
 function CategoryPanel({ cat, notifs, filters, selection, setSelection, addNotif, renameCategory, deleteCategory }) {
-  const panelRef = useRef(null);
+  const contentRef = useRef(null);
   const cardRefs = useRef({});
   const [paths, setPaths] = useState([]);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState(cat.name);
 
-  const ordered = useMemo(() => flowOrder(notifs), [notifs]);
-  const ids = useMemo(() => new Set(notifs.map(n => n.id)), [notifs]);
-  const edges = useMemo(() => {
-    const e = [];
-    notifs.forEach(n => (n.next || []).forEach(t => { if (ids.has(t)) e.push([n.id, t]); }));
-    return e;
-  }, [notifs, ids]);
+  const { isolated, layers, fwdEdges, backEdges } = useMemo(() => flowGraph(notifs), [notifs]);
+  const hasFlow = layers.length > 0;
 
   const measure = useCallback(() => {
-    const panel = panelRef.current;
-    if (!panel || !edges.length) { setPaths(p => (p.length ? [] : p)); return; }
-    const pr = panel.getBoundingClientRect();
+    const root = contentRef.current;
+    if (!root || (!fwdEdges.length && !backEdges.length)) { setPaths(p => (p.length ? [] : p)); return; }
+    const pr = root.getBoundingClientRect();
+    const rect = id => {
+      const el = cardRefs.current[id];
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { l: r.left - pr.left, r: r.right - pr.left, t: r.top - pr.top, b: r.bottom - pr.top,
+               cx: r.left - pr.left + r.width / 2, cy: r.top - pr.top + r.height / 2 };
+    };
     const next = [];
-    for (const [a, b] of edges) {
-      const ea = cardRefs.current[a], eb = cardRefs.current[b];
-      if (!ea || !eb) continue;
-      const ra = ea.getBoundingClientRect(), rb = eb.getBoundingClientRect();
-      const A = { l: ra.left - pr.left, r: ra.right - pr.left, t: ra.top - pr.top, b: ra.bottom - pr.top,
-                  cx: ra.left - pr.left + ra.width / 2, cy: ra.top - pr.top + ra.height / 2 };
-      const B = { l: rb.left - pr.left, r: rb.right - pr.left, t: rb.top - pr.top, b: rb.bottom - pr.top,
-                  cx: rb.left - pr.left + rb.width / 2, cy: rb.top - pr.top + rb.height / 2 };
-      let d;
-      if (B.l >= A.r - 4) {           // target is to the right → horizontal curve
-        d = `M ${A.r} ${A.cy} C ${A.r + 18} ${A.cy}, ${B.l - 18} ${B.cy}, ${B.l - 2} ${B.cy}`;
-      } else if (B.t >= A.b - 4) {    // target is below (row wrap) → vertical curve
-        d = `M ${A.cx} ${A.b} C ${A.cx} ${A.b + 22}, ${B.cx} ${B.t - 22}, ${B.cx} ${B.t - 2}`;
-      } else {                        // fallback: loop over the top
-        d = `M ${A.cx} ${A.t} C ${A.cx} ${A.t - 24}, ${B.cx} ${B.t - 24}, ${B.cx} ${B.t - 2}`;
-      }
-      next.push(d);
+    for (const [a, b] of fwdEdges) {
+      const A = rect(a), B = rect(b);
+      if (!A || !B) continue;
+      // target is always in a later column → horizontal curve out of A into B
+      next.push({ d: `M ${A.r} ${A.cy} C ${A.r + 20} ${A.cy}, ${B.l - 20} ${B.cy}, ${B.l - 2} ${B.cy}`, back: false });
     }
+    backEdges.forEach(([a, b], i) => {
+      const A = rect(a), B = rect(b);
+      if (!A || !B) return;
+      // loop back along a lane below the flow, then up into the bottom of the target
+      const laneY = pr.height - 8 - i * 16;
+      next.push({
+        d: `M ${A.cx} ${A.b} L ${A.cx} ${laneY} L ${B.cx} ${laneY} L ${B.cx} ${B.b + 3}`,
+        back: true,
+        label: { x: (A.cx + B.cx) / 2, y: laneY - 4, text: "↻ repeats" },
+      });
+    });
     setPaths(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
-  }, [edges]);
+  }, [fwdEdges, backEdges]);
 
-  useLayoutEffect(measure, [measure, ordered, filters]);
+  useLayoutEffect(measure, [measure, layers, isolated, filters]);
   useEffect(() => {
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
@@ -302,29 +364,70 @@ function CategoryPanel({ cat, notifs, filters, selection, setSelection, addNotif
           </React.Fragment>
         )}
       </div>
-      <div ref={panelRef} className="relative p-3">
-        <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
-          <defs>
-            <marker id={`arr-${cat.id}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-              <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b" />
-            </marker>
-          </defs>
-          {paths.map((d, i) => (
-            <path key={i} d={d} fill="none" stroke="#64748b" strokeWidth="1.5" markerEnd={`url(#arr-${cat.id})`} />
-          ))}
-        </svg>
-        <div className="relative z-[1] flex flex-wrap gap-x-9 gap-y-7">
-          {ordered.map(n => (
-            <NotifCard key={n.id} n={n}
-              cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
-              dimmed={!matchesFilters(n, filters, cat.name)}
-              selected={selection === n.id}
-              onClick={() => setSelection(n.id)} />
-          ))}
-          <button onClick={() => addNotif(cat.id)}
-            className="w-[168px] min-h-[58px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
-            + Add notification
-          </button>
+      <div className="p-3 overflow-x-auto">
+        <div ref={contentRef} className="relative w-max min-w-full"
+          style={{ paddingBottom: backEdges.length ? backEdges.length * 16 + 10 : 0 }}>
+          <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
+            <defs>
+              <marker id={`arr-${cat.id}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b" />
+              </marker>
+            </defs>
+            {paths.map((p, i) => (
+              <g key={i}>
+                <path d={p.d} fill="none" stroke={p.back ? "#94a3b8" : "#64748b"} strokeWidth="1.5"
+                  strokeDasharray={p.back ? "5 4" : undefined} markerEnd={`url(#arr-${cat.id})`} />
+                {p.label && <text x={p.label.x} y={p.label.y} textAnchor="middle"
+                  className="fill-slate-400" fontSize="9" fontStyle="italic">{p.label.text}</text>}
+              </g>
+            ))}
+          </svg>
+          <div className="relative z-[1]">
+            {isolated.length > 0 && (
+              <div className={`flex flex-wrap gap-x-9 gap-y-7 ${hasFlow ? "mb-6" : ""}`}>
+                {isolated.map(n => (
+                  <NotifCard key={n.id} n={n}
+                    cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
+                    dimmed={!matchesFilters(n, filters, cat.name)}
+                    selected={selection === n.id}
+                    onClick={() => setSelection(n.id)} />
+                ))}
+                {!hasFlow && (
+                  <button onClick={() => addNotif(cat.id)}
+                    className="w-[168px] min-h-[58px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
+                    + Add notification
+                  </button>
+                )}
+              </div>
+            )}
+            {hasFlow && (
+              <React.Fragment>
+                <div className="flex items-center gap-10">
+                  {layers.map((col, i) => (
+                    <div key={i} className="flex flex-col justify-center gap-7 shrink-0">
+                      {col.map(n => (
+                        <NotifCard key={n.id} n={n}
+                          cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
+                          dimmed={!matchesFilters(n, filters, cat.name)}
+                          selected={selection === n.id}
+                          onClick={() => setSelection(n.id)} />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => addNotif(cat.id)}
+                  className="mt-4 w-[168px] min-h-[34px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
+                  + Add notification
+                </button>
+              </React.Fragment>
+            )}
+            {!hasFlow && isolated.length === 0 && (
+              <button onClick={() => addNotif(cat.id)}
+                className="w-[168px] min-h-[58px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
+                + Add notification
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -523,7 +626,7 @@ function EditorDrawer({ n, data, update, remove, close }) {
             {others.filter(x => !(n.next || []).includes(x.id)).map(x =>
               <option key={x.id} value={x.id}>{x.name} ({catName(x.categoryId)})</option>)}
           </select>
-          <div className="text-[9px] text-slate-400 italic">Arrows draw on the board when both cards share a category.</div>
+          <div className="text-[9px] text-slate-400 italic">Arrows draw on the board when both cards share a category. A link back to an earlier card (e.g. monthly recurring) renders as a dashed ↻ return line.</div>
         </div>
       </Field>
       {predecessors.length > 0 && (
