@@ -73,20 +73,21 @@ const BUILTIN_TYPES = {
   P3: ["Tips & Recommendations", "Community Post", "Promo Offer"],
 };
 const PRIOS = ["P0", "P1", "P2", "P3"];
-// Notification Catalog (notification-catalog.html) is the source of truth when present;
-// priorities with no catalog entries fall back to the built-in types so every dropdown stays usable.
+// Notification Catalog (notification-catalog.html) is the source of truth when present —
+// strict 1:1, no built-in types mixed in. Built-ins are only the fallback when no catalog exists.
 const { TYPE_CATALOG, TYPE_SOURCE } = (() => {
   try {
     const cat = JSON.parse(localStorage.getItem("notifCatalog.v1") || "null");
     if (cat && Array.isArray(cat.notifications) && cat.notifications.length) {
       const types = { P0: [], P1: [], P2: [], P3: [] };
       for (const n of cat.notifications) if (types[n.priority] && n.name) types[n.priority].push(n.name);
-      for (const p of PRIOS) if (!types[p].length) types[p] = BUILTIN_TYPES[p];
       return { TYPE_CATALOG: types, TYPE_SOURCE: `Notification Catalog (${cat.notifications.length})` };
     }
   } catch {}
   return { TYPE_CATALOG: BUILTIN_TYPES, TYPE_SOURCE: "built-in types" };
 })();
+// first priority that actually has types — used as the default for new notifications
+const FIRST_PRIO = PRIOS.find(p => TYPE_CATALOG[p].length) || "P1";
 const PRIO_META = {
   P0: { dot: "bg-red-500",    chip: "bg-red-100 border-red-400 text-red-800",       text: "text-red-600",    label: "P0" },
   P1: { dot: "bg-orange-400", chip: "bg-orange-100 border-orange-400 text-orange-800", text: "text-orange-600", label: "P1" },
@@ -97,8 +98,15 @@ const PRIO_META = {
 /* ============================================================
    Pre-built scenarios
    ============================================================ */
-const mkScenario = rows => rows.map(([time, priority, type, label], i) =>
-  ({ id: `sc${i}-${time.replace(":", "")}-${priority}`, time, priority, type, label: label || "" }));
+// Scenario rows resolve against the active TYPE_CATALOG: a type that isn't in the catalog is
+// substituted with a same-priority catalog type, and rows whose priority has no types are dropped.
+const mkScenario = rows => rows
+  .filter(([, priority]) => TYPE_CATALOG[priority].length)
+  .map(([time, priority, type, label], i) => {
+    const list = TYPE_CATALOG[priority];
+    return { id: `sc${i}-${time.replace(":", "")}-${priority}`, time, priority,
+             type: list.includes(type) ? type : list[i % list.length], label: label || "" };
+  });
 
 const SCENARIOS = {
   empty: { name: "Empty (start fresh)", notifs: [] },
@@ -193,7 +201,6 @@ function runEngine(notifs, cfg, now, readMarks) {
   const pushes = [];
   const status = {};
   let cooldownUntil = -1;
-  const heldP0 = [];
 
   const items = notifs.map(n => {
     let abs = parseHM(n.time);
@@ -219,10 +226,11 @@ function runEngine(notifs, cfg, now, readMarks) {
     return push;
   }
 
-  function sendP0(n, t) {
+  function sendP0(n, t, quiet) {
     const b = batchFor(t);
     const push = sendPush("P0", [n], t);
     const lines = [`Notification: ${n.label || n.type}`];
+    if (quiet) lines.push("Quiet hours bypassed — P0 always sends instantly");
     if (cfg.cooldownScope === "batch") {
       if (!b.nextDay) { b.cooldown = true; lines.push(`Cooldown activated for Batch ${b.i + 1} (${hm(b.start)}–${hm(b.end)})`); }
     } else {
@@ -251,12 +259,7 @@ function runEngine(notifs, cfg, now, readMarks) {
     for (const n of items) {
       if (n.abs !== t) continue;
       if (n.priority === "P0") {
-        if (inQuiet(t)) {
-          heldP0.push({ n, release: simEnd, done: false });
-          status[n.id] = { ...status[n.id], state: "held" };
-          events.push({ time: t, type: "quiet", title: "P0 DURING QUIET HOURS",
-            lines: [`${n.label || n.type} held — sends at ${fmtT(simEnd)} (quiet hours end)`] });
-        } else sendP0(n, t);
+        sendP0(n, t, inQuiet(t));
       } else {
         const b = batchFor(t);
         b.queue.push({ n, deferCount: 0 });
@@ -265,7 +268,6 @@ function runEngine(notifs, cfg, now, readMarks) {
           lines: [`${n.priority} ${n.label || n.type} triggered in quiet hours → queued for next-day Batch 1`] });
       }
     }
-    for (const h of heldP0) if (h.release === t && !h.done) { h.done = true; sendP0(h.n, t); }
 
     /* 2 — batch pops */
     for (const b of batches) {
@@ -551,7 +553,6 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
       queued: [`queued B${(s.batch ?? 0) + 1 > engine.lastActive + 1 ? "1⁺¹ᵈ" : (s.batch ?? 0) + 1}`, "bg-blue-100 text-blue-700"],
       deferred: [`deferred ×${s.deferCount}`, "bg-amber-100 text-amber-700"],
       sent: [s.bundled ? `bundled ${hm(s.time)}` : `sent ${hm(s.time)}`, "bg-green-100 text-green-700"],
-      held: ["held (quiet)", "bg-purple-100 text-purple-700"],
     };
     const [txt, cls] = tags[s.state] || ["?", ""];
     return <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${cls}`}>{txt}</span>;
@@ -639,7 +640,8 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
           }}>
           <option value="">Load scenario…</option>
           <optgroup label="Examples">
-            {Object.entries(SCENARIOS).map(([k, s]) => <option key={k} value={k}>{s.name}</option>)}
+            {Object.entries(SCENARIOS).filter(([k, s]) => k === "empty" || s.notifs.length)
+              .map(([k, s]) => <option key={k} value={k}>{s.name}</option>)}
           </optgroup>
           {Object.keys(savedScn).length > 0 && (
             <optgroup label="Saved">
@@ -688,7 +690,7 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
         </div>
 
         {!addForm && (
-          <button onClick={() => setAddForm({ time: hm(Math.min(now + 30, engine.simEnd - 1)), priority: "P1", type: TYPE_CATALOG.P1[0], label: "" })}
+          <button onClick={() => setAddForm({ time: hm(Math.min(now + 30, engine.simEnd - 1)), priority: FIRST_PRIO, type: TYPE_CATALOG[FIRST_PRIO][0], label: "" })}
             className="mt-2 w-full text-[11px] font-semibold border border-dashed border-slate-400 text-slate-600 rounded py-1.5 hover:bg-slate-50 hover:border-blue-400 hover:text-blue-600">
             + Add Notification
           </button>
@@ -704,7 +706,7 @@ function LeftPanel({ cfg, setCfg, notifs, setNotifs, engine, now, addForm, setAd
                   const p = e.target.value;
                   setAddForm({ ...addForm, priority: p, type: TYPE_CATALOG[p][0] });
                 }}>
-                {PRIOS.map(p => <option key={p} value={p}>{p}</option>)}
+                {PRIOS.map(p => <option key={p} value={p} disabled={!TYPE_CATALOG[p].length}>{p}</option>)}
               </select>
             </div>
             <select className={`${inputCls} w-full`} value={addForm.type}
@@ -1035,7 +1037,6 @@ function DetailCard({ selection, setSelection, engine, notifs, now, toggleRead, 
       queued: `Queued in ${s.batch === engine.ndIdx ? "next-day Batch 1" : `Batch ${(s.batch ?? 0) + 1}`}`,
       deferred: `Deferred ×${s.deferCount} → ${s.batch === engine.ndIdx ? "next-day Batch 1" : `Batch ${(s.batch ?? 0) + 1}`}${s.reason === "cooldown" ? " (P0 cooldown)" : ""}`,
       sent: `${s.bundled ? "Sent in bundle" : "Sent"} at ${fmtT(s.time)}`,
-      held: "P0 held during quiet hours",
     }[s.state] || "—";
     body = (
       <React.Fragment>
@@ -1159,7 +1160,7 @@ function App() {
   };
 
   const onTimelineClick = t => {
-    setAddForm({ time: hm(t), priority: "P1", type: TYPE_CATALOG.P1[0], label: "" });
+    setAddForm({ time: hm(t), priority: FIRST_PRIO, type: TYPE_CATALOG[FIRST_PRIO][0], label: "" });
   };
 
   return (
