@@ -314,6 +314,7 @@
               <th>Value</th>
               <th>Variable</th>
               <th>Value</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="rules-body"></tbody>
@@ -466,7 +467,7 @@ const SLOT_COUNT = 5;
 
 function captureEditorState() {
   const rules = [];
-  for (let i = 0; i < DEFAULT_RULES.length; i++) {
+  for (let i = 0; i < currentRuleDefs.length; i++) {
     rules.push({
       name:  document.getElementById(`rn-${i}`).value,
       dnVar: document.getElementById(`rdnv-${i}`).value,
@@ -482,15 +483,13 @@ function captureEditorState() {
 }
 
 function applyEditorState(state) {
-  state.rules.forEach((r, i) => {
-    document.getElementById(`rn-${i}`).value     = r.name;
-    document.getElementById(`rdnv-${i}`).value   = r.dnVar;
-    document.getElementById(`rdnval-${i}`).value = r.dnVal;
-    document.getElementById(`rodv-${i}`).value   = r.odVar;
-    document.getElementById(`rodval-${i}`).value = r.odVal;
-    if (document.getElementById(`rcpv-${i}`))   document.getElementById(`rcpv-${i}`).value   = r.cpVar || 'ϕ';
-    if (document.getElementById(`rcpval-${i}`)) document.getElementById(`rcpval-${i}`).value = r.cpVal ?? 999;
-  });
+  currentRuleDefs = state.rules.map(r => ({
+    name:  r.name,
+    dnVar: r.dnVar || 'γ', dnVal: r.dnVal ?? 0,
+    odVar: r.odVar || 'γ', odVal: r.odVal ?? 0,
+    cpVar: r.cpVar || 'ϕ', cpVal: r.cpVal ?? 999,
+  }));
+  buildRulesTable();
   document.getElementById('grace').value = state.grace;
   simulate();
 }
@@ -615,13 +614,17 @@ function commitRenameSlot(i, value) {
 
 // ── End save slot system ──────────────────────────────────────────────────────
 
+// Mutable working copy of task definitions — add/remove/load all mutate this
+let currentRuleDefs = DEFAULT_RULES.map(r => ({...r}));
+
 function buildRulesTable() {
   const tbody = document.getElementById('rules-body');
   tbody.innerHTML = '';
-  DEFAULT_RULES.forEach((r, i) => {
+  currentRuleDefs.forEach((r, i) => {
+    const canRemove = currentRuleDefs.length > 1;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><input type="text" value="${r.name}" id="rn-${i}" oninput="simulate()" style="width:120px;" /></td>
+      <td><input type="text" value="${escHtml(r.name)}" id="rn-${i}" oninput="simulate()" style="width:120px;" /></td>
       <td>
         <select id="rdnv-${i}" onchange="simulate()">
           <option value="ϕ" ${r.dnVar==='ϕ'?'selected':''}>ϕ</option>
@@ -643,13 +646,30 @@ function buildRulesTable() {
         </select>
       </td>
       <td><input type="number" id="rcpval-${i}" value="${r.cpVal}" style="width:52px;" oninput="simulate()" /></td>
+      <td>
+        <button onclick="removeTask(${i})" title="Remove task"
+          style="background:none;border:none;cursor:${canRemove?'pointer':'not-allowed'};
+                 color:${canRemove?'#94a3b8':'#d1d5db'};font-size:14px;padding:2px 4px;line-height:1;"
+          ${canRemove?'':'disabled'}>×</button>
+      </td>
     `;
     tbody.appendChild(tr);
   });
+  // Add task row
+  const addRow = document.createElement('tr');
+  addRow.innerHTML = `
+    <td colspan="9" style="padding:5px 4px;">
+      <button onclick="addTask()"
+        style="font-size:11px;font-weight:600;color:#3b82f6;background:none;border:1px dashed #93c5fd;
+               border-radius:4px;padding:3px 10px;cursor:pointer;width:100%;">
+        + Add task
+      </button>
+    </td>`;
+  tbody.appendChild(addRow);
 }
 
 function getRules() {
-  return DEFAULT_RULES.map((_, i) => ({
+  return currentRuleDefs.map((_, i) => ({
     name:  document.getElementById(`rn-${i}`).value.trim() || `Task ${i+1}`,
     dnVar: document.getElementById(`rdnv-${i}`).value,
     dnVal: parseFloat(document.getElementById(`rdnval-${i}`).value) || 0,
@@ -658,6 +678,28 @@ function getRules() {
     cpVar: document.getElementById(`rcpv-${i}`).value,
     cpVal: parseFloat(document.getElementById(`rcpval-${i}`).value) ?? 999,
   }));
+}
+
+function syncCurrentDefs() {
+  currentRuleDefs = getRules();
+}
+
+function addTask() {
+  syncCurrentDefs();
+  currentRuleDefs.push({ name: 'New task', dnVar: 'γ', dnVal: 60, odVar: 'γ', odVal: 30, cpVar: 'ϕ', cpVal: 999 });
+  buildRulesTable();
+  simulate();
+  // Focus the new task name field
+  const newInput = document.getElementById(`rn-${currentRuleDefs.length - 1}`);
+  if (newInput) { newInput.focus(); newInput.select(); }
+}
+
+function removeTask(i) {
+  if (currentRuleDefs.length <= 1) return;
+  syncCurrentDefs();
+  currentRuleDefs.splice(i, 1);
+  buildRulesTable();
+  simulate();
 }
 
 function onLambdaChange() {
