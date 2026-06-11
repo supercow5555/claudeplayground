@@ -304,9 +304,12 @@
               <th style="width:130px;">Task</th>
               <th colspan="2" class="text-center" style="color:#3b82f6;">Do Now trigger</th>
               <th colspan="2" class="text-center" style="color:#ef4444;">Overdue trigger</th>
+              <th colspan="2" class="text-center" style="color:#22c55e;">Completed trigger</th>
             </tr>
             <tr>
               <th></th>
+              <th>Variable</th>
+              <th>Value</th>
               <th>Variable</th>
               <th>Value</th>
               <th>Variable</th>
@@ -367,7 +370,7 @@
         </div>
         <div class="col-completed rounded-lg p-2 border border-green-100">
           <div class="col-header col-header-completed">Completed</div>
-          <div id="col-completed-tasks" class="text-xs text-gray-400 italic">—</div>
+          <div id="col-completed-tasks"></div>
         </div>
       </div>
 
@@ -447,14 +450,14 @@
 
 <script>
 const DEFAULT_RULES = [
-  { name: "Passport scan",     dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
-  { name: "Parent contact",    dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7  },
-  { name: "Address",           dnVar: "γ", dnVal: 120, odVar: "γ", odVal: 90 },
-  { name: "Arrange travel",    dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
-  { name: "Manage documents",  dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
-  { name: "Health info",       dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60 },
-  { name: "Emergency contact", dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30 },
-  { name: "Placement test",    dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30 },
+  { name: "Passport scan",     dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7,  cpVar: "ϕ", cpVal: 999 },
+  { name: "Parent contact",    dnVar: "ϕ", dnVal: 0,   odVar: "ϕ", odVal: 7,  cpVar: "ϕ", cpVal: 999 },
+  { name: "Address",           dnVar: "γ", dnVal: 120, odVar: "γ", odVal: 90, cpVar: "ϕ", cpVal: 999 },
+  { name: "Arrange travel",    dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60, cpVar: "ϕ", cpVal: 999 },
+  { name: "Manage documents",  dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60, cpVar: "ϕ", cpVal: 999 },
+  { name: "Health info",       dnVar: "γ", dnVal: 90,  odVar: "γ", odVal: 60, cpVar: "ϕ", cpVal: 999 },
+  { name: "Emergency contact", dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30, cpVar: "ϕ", cpVal: 999 },
+  { name: "Placement test",    dnVar: "γ", dnVal: 60,  odVar: "γ", odVal: 30, cpVar: "ϕ", cpVal: 999 },
 ];
 
 // ── Save slot system ─────────────────────────────────────────────────────────
@@ -470,6 +473,8 @@ function captureEditorState() {
       dnVal: document.getElementById(`rdnval-${i}`).value,
       odVar: document.getElementById(`rodv-${i}`).value,
       odVal: document.getElementById(`rodval-${i}`).value,
+      cpVar: document.getElementById(`rcpv-${i}`).value,
+      cpVal: document.getElementById(`rcpval-${i}`).value,
     });
   }
   const grace = document.getElementById('grace').value;
@@ -483,6 +488,8 @@ function applyEditorState(state) {
     document.getElementById(`rdnval-${i}`).value = r.dnVal;
     document.getElementById(`rodv-${i}`).value   = r.odVar;
     document.getElementById(`rodval-${i}`).value = r.odVal;
+    if (document.getElementById(`rcpv-${i}`))   document.getElementById(`rcpv-${i}`).value   = r.cpVar || 'ϕ';
+    if (document.getElementById(`rcpval-${i}`)) document.getElementById(`rcpval-${i}`).value = r.cpVal ?? 999;
   });
   document.getElementById('grace').value = state.grace;
   simulate();
@@ -492,6 +499,7 @@ function defaultEditorState() {
   const rules = DEFAULT_RULES.map(r => ({
     name: r.name, dnVar: r.dnVar, dnVal: String(r.dnVal),
     odVar: r.odVar, odVal: String(r.odVal),
+    cpVar: r.cpVar, cpVal: String(r.cpVal),
   }));
   return { rules, grace: '3' };
 }
@@ -628,6 +636,13 @@ function buildRulesTable() {
         </select>
       </td>
       <td><input type="number" id="rodval-${i}" value="${r.odVal}" style="width:52px;" oninput="simulate()" /></td>
+      <td>
+        <select id="rcpv-${i}" onchange="simulate()">
+          <option value="ϕ" ${r.cpVar==='ϕ'?'selected':''}>ϕ</option>
+          <option value="γ" ${r.cpVar==='γ'?'selected':''}>γ</option>
+        </select>
+      </td>
+      <td><input type="number" id="rcpval-${i}" value="${r.cpVal}" style="width:52px;" oninput="simulate()" /></td>
     `;
     tbody.appendChild(tr);
   });
@@ -640,6 +655,8 @@ function getRules() {
     dnVal: parseFloat(document.getElementById(`rdnval-${i}`).value) || 0,
     odVar: document.getElementById(`rodv-${i}`).value,
     odVal: parseFloat(document.getElementById(`rodval-${i}`).value) || 0,
+    cpVar: document.getElementById(`rcpv-${i}`).value,
+    cpVal: parseFloat(document.getElementById(`rcpval-${i}`).value) ?? 999,
   }));
 }
 
@@ -691,8 +708,17 @@ function simulate() {
       odCondStr = `γ = ${gamma}, threshold ≤ ${r.odVal}`;
     }
 
+    const cpVal = r.cpVal ?? 999;
+    const cpMet = r.cpVar === 'ϕ' ? phi >= cpVal : gamma <= cpVal;
+    const cpCondStr = r.cpVar === 'ϕ'
+      ? `ϕ = ${phi}, threshold ≥ ${cpVal}`
+      : `γ = ${gamma}, threshold ≤ ${cpVal}`;
+
     let state;
-    if (odMet && phi >= grace) {
+    if (cpMet) {
+      state = 'COMPLETED';
+      activeCondStr = cpCondStr;
+    } else if (odMet && phi >= grace) {
       state = 'OVERDUE';
       activeCondStr = odCondStr;
     } else if (dnMet) {
@@ -707,7 +733,7 @@ function simulate() {
   });
 
   // Render columns
-  const cols = { 'OVERDUE': [], 'DO NOW': [], 'DO LATER': [] };
+  const cols = { 'OVERDUE': [], 'DO NOW': [], 'DO LATER': [], 'COMPLETED': [] };
   results.forEach(r => cols[r.state].push(r));
 
   function renderCards(tasks, cssClass) {
@@ -720,9 +746,10 @@ function simulate() {
     ).join('');
   }
 
-  document.getElementById('col-overdue-tasks').innerHTML = renderCards(cols['OVERDUE'], 'card-overdue');
-  document.getElementById('col-donow-tasks').innerHTML   = renderCards(cols['DO NOW'],  'card-donow');
-  document.getElementById('col-dolater-tasks').innerHTML = renderCards(cols['DO LATER'],'card-dolater');
+  document.getElementById('col-overdue-tasks').innerHTML    = renderCards(cols['OVERDUE'],   'card-overdue');
+  document.getElementById('col-donow-tasks').innerHTML      = renderCards(cols['DO NOW'],    'card-donow');
+  document.getElementById('col-dolater-tasks').innerHTML    = renderCards(cols['DO LATER'],  'card-dolater');
+  document.getElementById('col-completed-tasks').innerHTML  = renderCards(cols['COMPLETED'], 'card-completed');
 
   // Priority conflict detection
   // For each OVERDUE task, check if any task with lower index (higher priority) is only DO NOW
@@ -780,10 +807,13 @@ function evalStates(lam, phi, rules, grace) {
   return rules.map(r => {
     const dnVal = parseFloat(r.dnVal) || 0;
     const odVal = parseFloat(r.odVal) || 0;
+    const cpVal = parseFloat(r.cpVal) ?? 999;
     const dnMet = r.dnVar === 'ϕ' ? phi >= dnVal : gamma <= dnVal;
     const odMet = r.odVar === 'ϕ' ? phi >= odVal : gamma <= odVal;
+    const cpMet = r.cpVar === 'ϕ' ? phi >= cpVal : gamma <= cpVal;
     let state;
-    if (odMet && phi >= grace) state = 'OVERDUE';
+    if (cpMet)                 state = 'COMPLETED';
+    else if (odMet && phi >= grace) state = 'OVERDUE';
     else if (dnMet)            state = 'DO NOW';
     else                       state = 'DO LATER';
     return { name: r.name, state };
@@ -791,21 +821,23 @@ function evalStates(lam, phi, rules, grace) {
 }
 
 // Returns { priority: string[], emptyDoNow: bool }
+// Completed tasks are excluded — they are resolved and don't participate in conflicts.
 function findConflicts(states) {
+  const active = states.filter(s => s.state !== 'COMPLETED');
   const priority = [];
-  states.forEach((s, i) => {
+  active.forEach((s, i) => {
     if (s.state === 'OVERDUE') {
       for (let j = 0; j < i; j++) {
-        if (states[j].state === 'DO NOW') {
-          priority.push(`${s.name} Overdue > ${states[j].name} Do Now`);
+        if (active[j].state === 'DO NOW') {
+          priority.push(`${s.name} Overdue > ${active[j].name} Do Now`);
         }
       }
     }
   });
-  const hasOverdue  = states.some(s => s.state === 'OVERDUE');
-  const hasDoNow    = states.some(s => s.state === 'DO NOW');
-  const hasDoLater  = states.some(s => s.state === 'DO LATER');
-  const emptyDoNow  = hasOverdue && !hasDoNow && hasDoLater;
+  const hasOverdue = active.some(s => s.state === 'OVERDUE');
+  const hasDoNow   = active.some(s => s.state === 'DO NOW');
+  const hasDoLater = active.some(s => s.state === 'DO LATER');
+  const emptyDoNow = hasOverdue && !hasDoNow && hasDoLater;
   return { priority, emptyDoNow };
 }
 
