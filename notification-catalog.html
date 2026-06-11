@@ -29,10 +29,10 @@ const { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } = R
 const STORAGE_KEY = "notifCatalog.v1";
 const PRIOS = ["P0", "P1", "P2", "P3"];
 const PRIO_META = {
-  P0: { dot: "bg-red-500",    chip: "bg-red-100 border-red-400 text-red-800",          card: "bg-red-50 border-red-400" },
-  P1: { dot: "bg-orange-400", chip: "bg-orange-100 border-orange-400 text-orange-800",  card: "bg-orange-50 border-orange-300" },
-  P2: { dot: "bg-yellow-400", chip: "bg-yellow-100 border-yellow-400 text-yellow-800",  card: "bg-yellow-50 border-yellow-300" },
-  P3: { dot: "bg-green-500",  chip: "bg-green-100 border-green-500 text-green-800",     card: "bg-green-50 border-green-400" },
+  P0: { dot: "bg-red-500",    chip: "bg-red-100 border-red-400 text-red-800",          edge: "border-l-red-500" },
+  P1: { dot: "bg-orange-400", chip: "bg-orange-100 border-orange-400 text-orange-800",  edge: "border-l-orange-400" },
+  P2: { dot: "bg-yellow-400", chip: "bg-yellow-100 border-yellow-400 text-yellow-800",  edge: "border-l-yellow-400" },
+  P3: { dot: "bg-green-500",  chip: "bg-green-100 border-green-500 text-green-800",     edge: "border-l-green-500" },
 };
 const STATUSES = ["idea", "planned", "live"];
 const STATUS_META = {
@@ -268,20 +268,16 @@ function NotifCard({ n, dimmed, selected, onClick, cardRef }) {
   const m = PRIO_META[n.priority];
   return (
     <div ref={cardRef} onClick={e => { e.stopPropagation(); onClick(); }}
-      className={`card-in cursor-pointer select-none rounded-lg border-2 px-2.5 py-1.5 w-[168px] shadow-sm transition
-        ${m.card} ${dimmed ? "opacity-25" : "hover:shadow-md"} ${selected ? "ring-2 ring-blue-500" : ""}`}>
+      className={`card-in cursor-pointer select-none rounded-md border border-slate-200 border-l-4 ${m.edge} bg-white px-2.5 py-1.5 w-[170px] shadow-sm transition
+        ${dimmed ? "opacity-25" : "hover:shadow-md"} ${selected ? "ring-2 ring-blue-500" : ""}`}>
       <div className="flex items-center gap-1.5 mb-0.5">
         <PrioBadge p={n.priority} />
         <span className="text-[11px] font-bold leading-tight flex-1">{n.name}</span>
         <StatusDot s={n.status} />
       </div>
-      <div className="text-[10px] text-slate-600 leading-snug">
+      <div className="text-[10px] text-slate-500 leading-snug">
         Trig: &lt;{triggerLabel(n.trigger)}&gt;
       </div>
-      {n.trigger?.kind === "time_based" && n.trigger.anchor &&
-        <div className="text-[9px] text-slate-400 italic">⏱ {n.trigger.anchor}</div>}
-      {(n.notes || n.copyTitle) &&
-        <div className="text-[9px] text-slate-400 mt-0.5">{n.copyTitle ? "💬" : ""}{n.notes ? "📝" : ""}</div>}
     </div>
   );
 }
@@ -344,8 +340,8 @@ function CategoryPanel({ cat, notifs, filters, selection, setSelection, addNotif
   };
 
   return (
-    <div className="bg-blue-50/60 border border-blue-200 rounded-xl shadow-sm">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-blue-200 bg-white rounded-t-xl">
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100">
         {renaming ? (
           <input autoFocus className={`${inputCls} font-bold`} value={nameDraft}
             onChange={e => setNameDraft(e.target.value)}
@@ -356,6 +352,8 @@ function CategoryPanel({ cat, notifs, filters, selection, setSelection, addNotif
         {!renaming && <span className="text-[10px] text-slate-400">{notifs.length}</span>}
         {!renaming && (
           <React.Fragment>
+            <button onClick={() => addNotif(cat.id)} title="Add notification"
+              className="text-slate-400 hover:text-blue-600 text-sm font-bold leading-none px-1">+</button>
             <button onClick={() => { setNameDraft(cat.name); setRenaming(true); }}
               title="Rename category" className="text-slate-300 hover:text-blue-500 text-xs">✎</button>
             <button onClick={() => deleteCategory(cat.id)} title={notifs.length ? "Remove notifications first" : "Delete category"}
@@ -364,71 +362,56 @@ function CategoryPanel({ cat, notifs, filters, selection, setSelection, addNotif
           </React.Fragment>
         )}
       </div>
-      <div className="p-3 overflow-x-auto">
-        <div ref={contentRef} className="relative w-max min-w-full"
-          style={{ paddingBottom: backEdges.length ? backEdges.length * 16 + 10 : 0 }}>
-          <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
-            <defs>
-              <marker id={`arr-${cat.id}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b" />
-              </marker>
-            </defs>
-            {paths.map((p, i) => (
-              <g key={i}>
-                <path d={p.d} fill="none" stroke={p.back ? "#94a3b8" : "#64748b"} strokeWidth="1.5"
-                  strokeDasharray={p.back ? "5 4" : undefined} markerEnd={`url(#arr-${cat.id})`} />
-                {p.label && <text x={p.label.x} y={p.label.y} textAnchor="middle"
-                  className="fill-slate-400" fontSize="9" fontStyle="italic">{p.label.text}</text>}
-              </g>
+      <div className="p-3 bg-slate-50/60 rounded-b-xl">
+        {isolated.length > 0 && (
+          <div className={`flex flex-wrap gap-3 ${hasFlow ? "mb-5" : ""}`}>
+            {isolated.map(n => (
+              <NotifCard key={n.id} n={n}
+                cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
+                dimmed={!matchesFilters(n, filters, cat.name)}
+                selected={selection === n.id}
+                onClick={() => setSelection(n.id)} />
             ))}
-          </svg>
-          <div className="relative z-[1]">
-            {isolated.length > 0 && (
-              <div className={`flex flex-wrap gap-x-9 gap-y-7 ${hasFlow ? "mb-6" : ""}`}>
-                {isolated.map(n => (
-                  <NotifCard key={n.id} n={n}
-                    cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
-                    dimmed={!matchesFilters(n, filters, cat.name)}
-                    selected={selection === n.id}
-                    onClick={() => setSelection(n.id)} />
-                ))}
-                {!hasFlow && (
-                  <button onClick={() => addNotif(cat.id)}
-                    className="w-[168px] min-h-[58px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
-                    + Add notification
-                  </button>
-                )}
-              </div>
-            )}
-            {hasFlow && (
-              <React.Fragment>
-                <div className="flex items-center gap-10">
-                  {layers.map((col, i) => (
-                    <div key={i} className="flex flex-col justify-center gap-7 shrink-0">
-                      {col.map(n => (
-                        <NotifCard key={n.id} n={n}
-                          cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
-                          dimmed={!matchesFilters(n, filters, cat.name)}
-                          selected={selection === n.id}
-                          onClick={() => setSelection(n.id)} />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                <button onClick={() => addNotif(cat.id)}
-                  className="mt-4 w-[168px] min-h-[34px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
-                  + Add notification
-                </button>
-              </React.Fragment>
-            )}
-            {!hasFlow && isolated.length === 0 && (
-              <button onClick={() => addNotif(cat.id)}
-                className="w-[168px] min-h-[58px] rounded-lg border-2 border-dashed border-slate-300 text-slate-400 text-[11px] font-semibold hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
-                + Add notification
-              </button>
-            )}
           </div>
-        </div>
+        )}
+        {hasFlow && (
+          <div className="overflow-x-auto">
+            <div ref={contentRef} className="relative w-max"
+              style={{ paddingBottom: backEdges.length ? backEdges.length * 14 + 8 : 0 }}>
+              <svg className="absolute inset-0 w-full h-full pointer-events-none z-0">
+                <defs>
+                  <marker id={`arr-${cat.id}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 8 4 L 0 8 z" fill="#64748b" />
+                  </marker>
+                </defs>
+                {paths.map((p, i) => (
+                  <g key={i}>
+                    <path d={p.d} fill="none" stroke={p.back ? "#94a3b8" : "#64748b"} strokeWidth="1.5"
+                      strokeDasharray={p.back ? "5 4" : undefined} markerEnd={`url(#arr-${cat.id})`} />
+                    {p.label && <text x={p.label.x} y={p.label.y} textAnchor="middle"
+                      className="fill-slate-400" fontSize="9" fontStyle="italic">{p.label.text}</text>}
+                  </g>
+                ))}
+              </svg>
+              <div className="relative z-[1] flex items-center gap-7">
+                {layers.map((col, i) => (
+                  <div key={i} className="flex flex-col justify-center gap-5 shrink-0">
+                    {col.map(n => (
+                      <NotifCard key={n.id} n={n}
+                        cardRef={el => { if (el) cardRefs.current[n.id] = el; else delete cardRefs.current[n.id]; }}
+                        dimmed={!matchesFilters(n, filters, cat.name)}
+                        selected={selection === n.id}
+                        onClick={() => setSelection(n.id)} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        {notifs.length === 0 && (
+          <div className="text-[11px] text-slate-400 italic py-1">No notifications yet — use + in the header.</div>
+        )}
       </div>
     </div>
   );
@@ -764,25 +747,17 @@ function App() {
       <div className="flex-1 min-h-0 flex">
         <div className="flex-1 min-w-0 overflow-auto p-4">
           {view === "board" ? (
-            <div className="space-y-4 max-w-[1500px]">
-              <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))" }}>
-                {cats.map(cat => {
-                  const notifs = data.notifications.filter(n => n.categoryId === cat.id);
-                  // categories with chains get full width so the flow can breathe
-                  const hasChain = notifs.some(n => (n.next || []).some(t => notifs.find(x => x.id === t)));
-                  return (
-                    <div key={cat.id} style={hasChain ? { gridColumn: "1 / -1" } : undefined}>
-                      <CategoryPanel cat={cat} notifs={notifs} filters={filters}
-                        selection={selection} setSelection={setSelection}
-                        addNotif={addNotif} renameCategory={renameCategory} deleteCategory={deleteCategory} />
-                    </div>
-                  );
-                })}
-                <button onClick={addCategory}
-                  className="min-h-[100px] rounded-xl border-2 border-dashed border-slate-300 text-slate-400 font-semibold text-sm hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
-                  + Add category
-                </button>
-              </div>
+            <div className="space-y-3">
+              {cats.map(cat => (
+                <CategoryPanel key={cat.id} cat={cat}
+                  notifs={data.notifications.filter(n => n.categoryId === cat.id)}
+                  filters={filters} selection={selection} setSelection={setSelection}
+                  addNotif={addNotif} renameCategory={renameCategory} deleteCategory={deleteCategory} />
+              ))}
+              <button onClick={addCategory}
+                className="w-full py-3 rounded-xl border-2 border-dashed border-slate-300 text-slate-400 font-semibold text-sm hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50">
+                + Add category
+              </button>
             </div>
           ) : (
             <TableView data={data} filters={filters} selection={selection} setSelection={setSelection} />
