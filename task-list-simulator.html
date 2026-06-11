@@ -85,6 +85,9 @@
   td { padding: 3px 4px; vertical-align: middle; }
   tr:nth-child(even) td { background: #f8fafc; }
   tr:nth-child(odd) td { background: #ffffff; }
+  .drag-handle { cursor: grab; color: #cbd5e1; font-size: 13px; padding: 0 4px; user-select: none; }
+  .drag-handle:active { cursor: grabbing; }
+  tr.drag-over td { background: #dbeafe !important; }
 
   /* Explainer */
   #explainer-body {
@@ -301,12 +304,14 @@
         <table class="w-full border-collapse" style="min-width:540px;">
           <thead>
             <tr>
+              <th style="width:16px;"></th>
               <th style="width:130px;">Task</th>
               <th colspan="2" class="text-center" style="color:#3b82f6;">Do Now trigger</th>
               <th colspan="2" class="text-center" style="color:#ef4444;">Overdue trigger</th>
               <th colspan="2" class="text-center" style="color:#22c55e;">Completed trigger</th>
             </tr>
             <tr>
+              <th></th>
               <th></th>
               <th>Variable</th>
               <th>Value</th>
@@ -616,6 +621,7 @@ function commitRenameSlot(i, value) {
 
 // Mutable working copy of task definitions — add/remove/load all mutate this
 let currentRuleDefs = DEFAULT_RULES.map(r => ({...r}));
+let dragSrcIndex = null;
 
 function buildRulesTable() {
   const tbody = document.getElementById('rules-body');
@@ -623,7 +629,10 @@ function buildRulesTable() {
   currentRuleDefs.forEach((r, i) => {
     const canRemove = currentRuleDefs.length > 1;
     const tr = document.createElement('tr');
+    tr.draggable = true;
+    tr.dataset.index = i;
     tr.innerHTML = `
+      <td><span class="drag-handle" title="Drag to reorder">⠿</span></td>
       <td><input type="text" value="${escHtml(r.name)}" id="rn-${i}" oninput="simulate()" style="width:120px;" /></td>
       <td>
         <select id="rdnv-${i}" onchange="simulate()">
@@ -653,12 +662,42 @@ function buildRulesTable() {
           ${canRemove?'':'disabled'}>×</button>
       </td>
     `;
+
+    tr.addEventListener('dragstart', e => {
+      // Only start drag if the handle was the origin
+      dragSrcIndex = i;
+      e.dataTransfer.effectAllowed = 'move';
+      setTimeout(() => tr.style.opacity = '0.4', 0);
+    });
+    tr.addEventListener('dragend', () => {
+      tr.style.opacity = '';
+      document.querySelectorAll('#rules-body tr').forEach(r => r.classList.remove('drag-over'));
+    });
+    tr.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      document.querySelectorAll('#rules-body tr').forEach(r => r.classList.remove('drag-over'));
+      if (dragSrcIndex !== null && i !== dragSrcIndex) tr.classList.add('drag-over');
+    });
+    tr.addEventListener('dragleave', () => tr.classList.remove('drag-over'));
+    tr.addEventListener('drop', e => {
+      e.preventDefault();
+      if (dragSrcIndex === null || dragSrcIndex === i) return;
+      syncCurrentDefs();
+      const moved = currentRuleDefs.splice(dragSrcIndex, 1)[0];
+      currentRuleDefs.splice(i, 0, moved);
+      dragSrcIndex = null;
+      buildRulesTable();
+      simulate();
+    });
+
     tbody.appendChild(tr);
   });
+
   // Add task row
   const addRow = document.createElement('tr');
   addRow.innerHTML = `
-    <td colspan="9" style="padding:5px 4px;">
+    <td colspan="10" style="padding:5px 4px;">
       <button onclick="addTask()"
         style="font-size:11px;font-weight:600;color:#3b82f6;background:none;border:1px dashed #93c5fd;
                border-radius:4px;padding:3px 10px;cursor:pointer;width:100%;">
