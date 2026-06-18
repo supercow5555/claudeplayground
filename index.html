@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Notification System Planning</title>
+<!-- Plain static page (inline CSS, no CDN) so the landing page always loads, even offline. -->
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #f1f5f9; color: #334155;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px;
+  }
+  h1 { font-size: 24px; margin: 0 0 4px; color: #1e293b; }
+  .sub { color: #64748b; font-size: 14px; margin: 0 0 28px; }
+  .cards { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 760px; }
+  a.card {
+    display: block; width: 340px; background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+    padding: 22px; text-decoration: none; color: inherit; box-shadow: 0 2px 10px rgba(0,0,0,.04);
+    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+  }
+  a.card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,.08); border-color: #93c5fd; }
+  .icon { font-size: 30px; }
+  .title { font-size: 17px; font-weight: 700; margin: 8px 0 4px; color: #1e293b; }
+  .desc { font-size: 13px; line-height: 1.5; color: #64748b; }
+  .go { display: inline-block; margin-top: 12px; font-size: 13px; font-weight: 600; color: #2563eb; }
+  footer { margin-top: 32px; font-size: 12px; color: #94a3b8; text-align: center; max-width: 520px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <h1>🔔 Notification System Planning</h1>
+  <p class="sub">Source-of-truth catalog and a prioritization sandbox for the notification system.</p>
+
+  <div class="cards">
+    <a class="card" href="notification-catalog.html">
+      <div class="icon">🗂</div>
+      <div class="title">Notification Catalog</div>
+      <div class="desc">Define and visualize every notification: categories, priorities, triggers, message copy, and escalation flows. The source of truth.</div>
+      <span class="go">Open catalog →</span>
+    </a>
+    <a class="card" href="notification-sandbox.html">
+      <div class="icon">🧪</div>
+      <div class="title">Prioritization Sandbox</div>
+      <div class="desc">Simulate when notifications actually send across the day — batching, quiet hours, P0 cooldowns, bundling, and the end-of-day digest.</div>
+      <span class="go">Open sandbox →</span>
+    </a>
+  </div>
+
+  <footer>
+    Edits are saved in your own browser (localStorage). Use the Export / Import buttons in each tool to share a version with someone else.
+  </footer>
+</body>
+</html>
