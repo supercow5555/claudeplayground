@@ -245,9 +245,9 @@ const SEED = {
         "condition": "Added"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Accommodation Details Ready",
+      "copyBody": "Your accommodation information is now available. Tap to view your full details in the app.",
+      "notes": "\"dont care about room change, change form one residence to another, different address.\n\nwhat about room type? - check w simon\"",
       "next": []
     },
     {
@@ -262,9 +262,9 @@ const SEED = {
         "condition": "Changed"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Accommodation Update",
+      "copyBody": "Your accommodation details have changed. Please review the updated information in the app.",
+      "notes": "\"Once accommodation request is confirmed by the school, accommodation is allocated. Now under active tab in production info. Check with Peter\n\nCheck when we show this in the app. \"",
       "next": []
     },
     {
@@ -279,9 +279,9 @@ const SEED = {
         "condition": "Added"
       },
       "status": "live",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Travel Details ",
+      "copyBody": "Your flight details are now available. Tap here to view them. ",
+      "notes": "travelitinerary added on booking\n\nTravel info tab, if popoulated for first time.\n\nInserted for first time",
       "next": []
     },
     {
@@ -296,9 +296,9 @@ const SEED = {
         "condition": "Changed"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Flight Changed",
+      "copyBody": "Your flight has been updated. Tap here to view the changes. ",
+      "notes": "careful for automatic cancels and new flights as part of process.\n\nCheck with patrick, michaela etc, do they cancel and rebook",
       "next": []
     },
     {
@@ -313,9 +313,9 @@ const SEED = {
         "condition": "missing and transfer booked"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Airport Transfer Not Confirmed",
+      "copyBody": "We can’t guarantee your airport transfer without your flight details. Please add them to confirm your pickup by tapping here.",
+      "notes": "Trigger: Flight not booked by EF, flight details missing and airport transfer booked\n\nQuestion: what happens when they never add flight details.",
       "next": []
     },
     {
@@ -330,8 +330,8 @@ const SEED = {
         "condition": "= Rejected"
       },
       "status": "live",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "Document Update",
+      "copyBody": "Your submitted document was rejected. Please review and resubmit.",
       "notes": "",
       "next": []
     },
@@ -347,9 +347,9 @@ const SEED = {
         "condition": "incomplete docs"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Documents Need Your Attention",
+      "copyBody": "You still have documents to complete in your To‑Do list. Tap here to review.",
+      "notes": "atleast 1 incomplete checklist item in todo and no other checklist type notification sent in last 7 days.\n\nunless all are completed + waiting on sales, send this notification",
       "next": []
     },
     {
@@ -364,9 +364,9 @@ const SEED = {
         "condition": "new doc visible in control centre"
       },
       "status": "live",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "New To-Do Document",
+      "copyBody": "You have a new document in your To-Do",
+      "notes": "automatically made when booking created. notification should be sent only when new checklist is added after first log in. destination change that adds a new checklist item",
       "next": []
     },
     {
@@ -381,9 +381,9 @@ const SEED = {
         "condition": "referral created account"
       },
       "status": "live",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "A Friend Joined Your Link",
+      "copyBody": "Great news! Someone signed up using your referral link. Encourage your friend to book their trip to earn activity credits.",
+      "notes": "Referal Link Sign up",
       "next": []
     },
     {
@@ -398,9 +398,9 @@ const SEED = {
         "condition": "referral made booking"
       },
       "status": "live",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Your Friend Booked!",
+      "copyBody": "Good news! Your friend booked their trip. You have earned [X] activity credits.",
+      "notes": "Referal Link Booked",
       "next": []
     },
     {
@@ -415,9 +415,9 @@ const SEED = {
         "condition": "= Confirmed"
       },
       "status": "live",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Activity Booked",
+      "copyBody": "Your activity is confirmed. Tap to view the details.",
+      "notes": "\"Does it require confirmation? Do we even need it? if its booked from campus connect, notification will be delayed by upto 2 hours\n\nLT activity schedule block is just fo rscheduling we dont wanna send notifs\"",
       "next": []
     },
     {
@@ -432,9 +432,9 @@ const SEED = {
         "condition": "= Cancelled"
       },
       "status": "live",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Activity Cancelled",
+      "copyBody": "Your activity has been cancelled. Check the app for updates.",
+      "notes": "\"whatever is done on atlantis is only sent as notification. \n\ndont care if it is done on CC\"",
       "next": []
     },
     {
@@ -449,9 +449,9 @@ const SEED = {
         "condition": "booking window open"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Plan Your Activities",
+      "copyBody": "Booking for school activities is now open. Tap to choose what you’d like to do during your trip.",
+      "notes": "\"State 1 - no visibilty, state 2 visible but not bookable, state 3 - bookable --> send notification\n\ncheck with ebba\"",
       "next": []
     },
     {
@@ -466,9 +466,9 @@ const SEED = {
         "condition": ""
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Upcoming payment",
+      "copyBody": "Your payment of {amount} is scheduled for {date}. Please ensure your payment method has sufficient funds.",
+      "notes": "t-3 days before due",
       "next": [
         "pay-success",
         "pay-failed"
@@ -483,11 +483,11 @@ const SEED = {
         "kind": "time_based",
         "anchor": "Payment due date",
         "offsetDays": 0,
-        "condition": "Pay Pass"
+        "condition": "Payment Success Event"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "Payment successful",
+      "copyBody": "We’ve received your payment of {amount}. You’re all set — no further action is needed.",
       "notes": "Flow ends here for this month — next month's Upcoming Payment starts a new cycle.",
       "next": []
     },
@@ -503,9 +503,9 @@ const SEED = {
         "condition": "Pay Fail"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Payment failed",
+      "copyBody": "\"We couldn’t process your payment of {amount}. \n\nWe will automatically retry the payment over the next 72 hours. Please ensure that you have enough balance available on your saved payment method.\"",
+      "notes": "\"only send failed if retry is turned on.\n\nwell retry over next 3 days\"",
       "next": [
         "pay-overdue"
       ]
@@ -522,8 +522,8 @@ const SEED = {
         "condition": "No Pay"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "Payment overdue",
+      "copyBody": "Your automated payment could not be completed. Tap here to complete the payment now.",
       "notes": "",
       "next": [
         "pay-outstanding"
@@ -541,9 +541,9 @@ const SEED = {
         "condition": "No Pay"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
-      "notes": "",
+      "copyTitle": "Payment still outstanding",
+      "copyBody": "\"Your balance of {amount} is still overdue. \n\nPlease complete your balance to keep your booking on track.\"",
+      "notes": "t + 4  and no payment | after retry attempts",
       "next": [
         "pay-misscall"
       ]
@@ -560,8 +560,8 @@ const SEED = {
         "condition": "No Call"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "We tried to reach you about your outstanding balance",
+      "copyBody": "Please contact EF Support or complete your payment today to avoid disruptions to your trip.",
       "notes": "",
       "next": [
         "pay-reminder"
@@ -579,8 +579,8 @@ const SEED = {
         "condition": "No Pay"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "Payment Reminder",
+      "copyBody": "Your balance of {amount} is still overdue. Please pay now to avoid further actions.",
       "notes": "",
       "next": [
         "pay-latewarn"
@@ -598,8 +598,8 @@ const SEED = {
         "condition": "No Pay"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "Late payment warning",
+      "copyBody": "If payment is not received, a late payment fee may apply.",
       "notes": "",
       "next": [
         "pay-prepenalty"
@@ -617,8 +617,8 @@ const SEED = {
         "condition": "No Pay"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "Final reminder before penalty",
+      "copyBody": "Your payment is significantly overdue.\n\nA late fee will be applied if payment is not received within the next 5 days.",
       "notes": "",
       "next": [
         "pay-latefee"
@@ -636,8 +636,8 @@ const SEED = {
         "condition": "No Pay"
       },
       "status": "planned",
-      "copyTitle": "",
-      "copyBody": "",
+      "copyTitle": "Late payment fee applied",
+      "copyBody": "A late fee has been added to your outstanding balance.\n\nPlease pay the full amount as soon as possible.",
       "notes": "Loops back to Upcoming Payment — payments recur monthly.",
       "next": [
         "pay-upcoming"
